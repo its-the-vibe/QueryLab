@@ -1,0 +1,7 @@
+redis:
+  host: localhost
+  port: 6379
+  # password is loaded from the REDIS_PASSWORD environment variable (see .env)
+
+# How often (in seconds) to ping the Redis server
+ping_interval_seconds: 5

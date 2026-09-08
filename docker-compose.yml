@@ -1,0 +1,14 @@
+services:
+  app:
+    build: .
+    image: ghcr.io/its-the-vibe/gdayredis:latest
+    pull_policy: always
+    env_file:
+      - .env
+    volumes:
+      - ./config.yaml:/config.yaml:ro
+    read_only: true
+    # Point to your external Redis instance via config.yaml
+    restart: on-failure:10
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
