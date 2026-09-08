@@ -33,7 +33,7 @@ config.yaml
 # build output
 bin/
 
-gdayredis
+querylab
 
 # Editor/IDE
 # .idea/

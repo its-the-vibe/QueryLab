@@ -1,7 +1,7 @@
 services:
   app:
     build: .
-    image: ghcr.io/its-the-vibe/gdayredis:latest
+    image: ghcr.io/its-the-vibe/querylab:latest
     pull_policy: always
     env_file:
       - .env

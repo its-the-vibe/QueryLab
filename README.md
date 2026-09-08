@@ -1,6 +1,6 @@
-# GdayRedis
+# QueryLab
 
-[![CI](https://github.com/its-the-vibe/GdayRedis/actions/workflows/ci.yaml/badge.svg)](https://github.com/its-the-vibe/GdayRedis/actions/workflows/ci.yaml)
+[![CI](https://github.com/its-the-vibe/QueryLab/actions/workflows/ci.yaml/badge.svg)](https://github.com/its-the-vibe/QueryLab/actions/workflows/ci.yaml)
 
 A production-ready "Hello World" Go service with Redis integration, containerised using a distroless Docker image.
 
@@ -67,7 +67,7 @@ ping_interval_seconds: 5
 
 | Target | Description |
 |--------|-------------|
-| `make build` | Compile binary to `bin/gdayredis` |
+| `make build` | Compile binary to `bin/querylab` |
 | `make run` | Build and run locally |
 | `make test` | Run Go tests |
 | `make lint` | Run `go vet` |
@@ -79,7 +79,7 @@ ping_interval_seconds: 5
 
 ```
 .
-├── cmd/gdayredis/   # Application entry point
+├── cmd/querylab/   # Application entry point
 ├── .github/workflows/ci.yaml
 ├── config.example.yaml
 ├── .env.example
