@@ -10,13 +10,13 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /gdayredis ./cmd/gdayredis
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /querylab ./cmd/querylab
 
 # ── Runtime stage (distroless) ────────────────────────────────────────────────
 FROM gcr.io/distroless/static-debian13:nonroot
 
-COPY --from=builder /gdayredis /gdayredis
+COPY --from=builder /querylab /querylab
 
 USER nonroot:nonroot
 
-ENTRYPOINT ["/gdayredis"]
+ENTRYPOINT ["/querylab"]

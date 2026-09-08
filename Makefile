@@ -1,4 +1,4 @@
-BINARY := gdayredis
+BINARY := querylab
 BUILD_DIR := bin
 
 .PHONY: all build run test lint clean
@@ -6,7 +6,7 @@ BUILD_DIR := bin
 all: build
 
 build:
-	go build -trimpath -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY) ./cmd/gdayredis
+	go build -trimpath -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY) ./cmd/querylab
 
 run: build
 	./$(BUILD_DIR)/$(BINARY)
