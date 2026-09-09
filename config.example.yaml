@@ -2,6 +2,21 @@ server:
   # HTTP address to bind the web front-end to
   addr: ":8080"
 
+redis:
+  # Redis used for Poppit notifications/pubsub
+  host: "localhost"
+  port: 6379
+  # password is loaded from REDIS_PASSWORD in .env
+
 poppit:
-  # Directory containing the goquery executable
-  directory: "/path/to/poppit"
+  # Notification fields consumed by Poppit
+  repo: "its-the-vibe/QueryLab"
+  branch: "refs/heads/main"
+  type: "querylab-web"
+  dir: "/tmp"
+  source: "querylab"
+
+  # Poppit channels/list names (match Poppit defaults)
+  notification_list: "poppit:notifications"
+  command_output_channel: "poppit:command-output"
+  command_timeout_seconds: 30

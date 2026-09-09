@@ -6,8 +6,8 @@ A web front-end service for discovering and executing GoQuery queries via Poppit
 
 ## Features
 
-- Discovers executable queries at startup using `./goquery --json list`
-- Lets users run queries from a web UI using `./goquery --json query <query_name>`
+- Discovers executable queries at startup by sending `./goquery --json list` through Poppit
+- Lets users run queries from a web UI by sending `./goquery --json query <query_name>` through Poppit
 - Renders query output in a tabular format
 - Configuration via `config.yaml` and optional env overrides
 - Container-ready (Dockerfile included)
@@ -16,7 +16,7 @@ A web front-end service for discovering and executing GoQuery queries via Poppit
 
 - [Go 1.24+](https://go.dev/dl/)
 - [Docker](https://docs.docker.com/get-docker/) & [Docker Compose](https://docs.docker.com/compose/)
-- A local clone/build of [Poppit](https://github.com/its-the-vibe/Poppit) with `goquery` executable available
+- A running [Poppit](https://github.com/its-the-vibe/Poppit) service connected to Redis
 
 ## Quick Start
 
@@ -27,7 +27,7 @@ A web front-end service for discovering and executing GoQuery queries via Poppit
 cp config.example.yaml config.yaml
 cp .env.example .env
 
-# 2. Edit config.yaml and set poppit.directory to your Poppit path
+# 2. Edit config.yaml for your Redis and Poppit settings
 
 # 3. Build and run
 make run
@@ -57,8 +57,18 @@ make docker-up
 ```yaml
 server:
   addr: ":8080"
+redis:
+  host: "localhost"
+  port: 6379
 poppit:
-  directory: "/path/to/poppit"
+  repo: "its-the-vibe/QueryLab"
+  branch: "refs/heads/main"
+  type: "querylab-web"
+  dir: "/tmp"
+  source: "querylab"
+  notification_list: "poppit:notifications"
+  command_output_channel: "poppit:command-output"
+  command_timeout_seconds: 30
 ```
 
 ## Makefile targets

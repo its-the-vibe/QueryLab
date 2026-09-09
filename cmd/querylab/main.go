@@ -8,13 +8,13 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/spf13/viper"
 )
 
@@ -22,8 +22,20 @@ type Config struct {
 	Server struct {
 		Addr string
 	}
+	Redis struct {
+		Host     string
+		Port     int
+		Password string
+	}
 	Poppit struct {
-		Directory string
+		Repo                 string
+		Branch               string
+		Type                 string
+		Dir                  string
+		Source               string
+		NotificationList     string `mapstructure:"notification_list"`
+		CommandOutputChannel string `mapstructure:"command_output_channel"`
+		CommandTimeoutSecs   int    `mapstructure:"command_timeout_seconds"`
 	}
 }
 
@@ -34,11 +46,30 @@ func loadConfig() (*Config, error) {
 	viper.AddConfigPath("/")
 
 	viper.SetDefault("server.addr", ":8080")
-	viper.SetDefault("poppit.directory", ".")
+	viper.SetDefault("redis.host", "localhost")
+	viper.SetDefault("redis.port", 6379)
+	viper.SetDefault("poppit.repo", "its-the-vibe/QueryLab")
+	viper.SetDefault("poppit.branch", "refs/heads/main")
+	viper.SetDefault("poppit.type", "querylab-web")
+	viper.SetDefault("poppit.dir", "/tmp")
+	viper.SetDefault("poppit.source", "querylab")
+	viper.SetDefault("poppit.notification_list", "poppit:notifications")
+	viper.SetDefault("poppit.command_output_channel", "poppit:command-output")
+	viper.SetDefault("poppit.command_timeout_seconds", 30)
 
 	viper.AutomaticEnv()
-	viper.BindEnv("server.addr", "SERVER_ADDR")
-	viper.BindEnv("poppit.directory", "POPPIT_DIRECTORY")
+	_ = viper.BindEnv("server.addr", "SERVER_ADDR")
+	_ = viper.BindEnv("redis.host", "REDIS_HOST")
+	_ = viper.BindEnv("redis.port", "REDIS_PORT")
+	_ = viper.BindEnv("redis.password", "REDIS_PASSWORD")
+	_ = viper.BindEnv("poppit.repo", "POPPIT_REPO")
+	_ = viper.BindEnv("poppit.branch", "POPPIT_BRANCH")
+	_ = viper.BindEnv("poppit.type", "POPPIT_TYPE")
+	_ = viper.BindEnv("poppit.dir", "POPPIT_DIR")
+	_ = viper.BindEnv("poppit.source", "POPPIT_SOURCE")
+	_ = viper.BindEnv("poppit.notification_list", "POPPIT_SERVICE_REDIS_LIST_NAME")
+	_ = viper.BindEnv("poppit.command_output_channel", "POPPIT_SERVICE_COMMAND_OUTPUT_CHANNEL")
+	_ = viper.BindEnv("poppit.command_timeout_seconds", "POPPIT_COMMAND_TIMEOUT_SECONDS")
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
@@ -54,12 +85,125 @@ func loadConfig() (*Config, error) {
 	return &cfg, nil
 }
 
-func discoverQueries(ctx context.Context, directory string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "./goquery", "--json", "list")
-	cmd.Dir = directory
-	output, err := cmd.CombinedOutput()
+type commandExecutor interface {
+	Execute(ctx context.Context, command string) ([]byte, error)
+}
+
+type poppitExecutor struct {
+	redisClient         *redis.Client
+	notificationList    string
+	commandOutputChan   string
+	repo                string
+	branch              string
+	commandType         string
+	dir                 string
+	source              string
+	commandTimeout      time.Duration
+}
+
+type poppitNotification struct {
+	Repo     string            `json:"repo"`
+	Branch   string            `json:"branch"`
+	Type     string            `json:"type"`
+	Dir      string            `json:"dir"`
+	Commands []string          `json:"commands"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+type poppitCommandOutput struct {
+	Metadata   map[string]string `json:"metadata"`
+	Type       string            `json:"type"`
+	Command    string            `json:"command"`
+	Output     string            `json:"output"`
+	Stderr     string            `json:"stderr"`
+	StatusCode int               `json:"status_code"`
+}
+
+func newPoppitExecutor(cfg *Config) *poppitExecutor {
+	return &poppitExecutor{
+		redisClient: redis.NewClient(&redis.Options{
+			Addr:     fmt.Sprintf("%s:%d", cfg.Redis.Host, cfg.Redis.Port),
+			Password: cfg.Redis.Password,
+		}),
+		notificationList:  cfg.Poppit.NotificationList,
+		commandOutputChan: cfg.Poppit.CommandOutputChannel,
+		repo:              cfg.Poppit.Repo,
+		branch:            cfg.Poppit.Branch,
+		commandType:       cfg.Poppit.Type,
+		dir:               cfg.Poppit.Dir,
+		source:            cfg.Poppit.Source,
+		commandTimeout:    time.Duration(cfg.Poppit.CommandTimeoutSecs) * time.Second,
+	}
+}
+
+func (e *poppitExecutor) Close() error {
+	return e.redisClient.Close()
+}
+
+func (e *poppitExecutor) Execute(ctx context.Context, command string) ([]byte, error) {
+	taskID := fmt.Sprintf("querylab-%d", time.Now().UnixNano())
+
+	subCtx, subCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer subCancel()
+
+	pubsub := e.redisClient.Subscribe(subCtx, e.commandOutputChan)
+	if _, err := pubsub.Receive(subCtx); err != nil {
+		_ = pubsub.Close()
+		return nil, fmt.Errorf("subscribing to poppit output: %w", err)
+	}
+	defer pubsub.Close()
+
+	notification := poppitNotification{
+		Repo:     e.repo,
+		Branch:   e.branch,
+		Type:     e.commandType,
+		Dir:      e.dir,
+		Commands: []string{command},
+		Metadata: map[string]string{
+			"taskId": taskID,
+			"source": e.source,
+		},
+	}
+
+	payload, err := json.Marshal(notification)
 	if err != nil {
-		return nil, fmt.Errorf("running goquery list: %w: %s", err, strings.TrimSpace(string(output)))
+		return nil, fmt.Errorf("marshalling poppit notification: %w", err)
+	}
+
+	if err := e.redisClient.RPush(ctx, e.notificationList, payload).Err(); err != nil {
+		return nil, fmt.Errorf("sending poppit notification: %w", err)
+	}
+
+	waitCtx, waitCancel := context.WithTimeout(ctx, e.commandTimeout)
+	defer waitCancel()
+
+	for {
+		msg, err := pubsub.ReceiveMessage(waitCtx)
+		if err != nil {
+			return nil, fmt.Errorf("waiting for poppit command output: %w", err)
+		}
+
+		var output poppitCommandOutput
+		if err := json.Unmarshal([]byte(msg.Payload), &output); err != nil {
+			continue
+		}
+		if output.Metadata["taskId"] != taskID {
+			continue
+		}
+		if output.Command != command {
+			continue
+		}
+		if output.StatusCode != 0 {
+			return nil, fmt.Errorf("poppit command failed (%d): %s", output.StatusCode, strings.TrimSpace(output.Stderr))
+		}
+		return []byte(output.Output), nil
+	}
+}
+
+func discoverQueries(ctx context.Context, executor commandExecutor) ([]string, error) {
+	output, err := executor.Execute(ctx, "./goquery --json list")
+	if err != nil {
+		return nil, fmt.Errorf("running goquery list via poppit: %w", err)
 	}
 
 	queries, err := parseQueryList(output)
@@ -136,14 +280,17 @@ func parseQueryList(output []byte) ([]string, error) {
 	return result, nil
 }
 
-func runQuery(ctx context.Context, directory, query string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "./goquery", "--json", "query", query)
-	cmd.Dir = directory
-	output, err := cmd.CombinedOutput()
+func runQuery(ctx context.Context, executor commandExecutor, query string) ([]byte, error) {
+	command := fmt.Sprintf("./goquery --json query %s", shellQuote(query))
+	output, err := executor.Execute(ctx, command)
 	if err != nil {
-		return nil, fmt.Errorf("running goquery query %q: %w: %s", query, err, strings.TrimSpace(string(output)))
+		return nil, fmt.Errorf("running goquery query %q via poppit: %w", query, err)
 	}
 	return output, nil
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func parseRows(output []byte) ([]map[string]any, error) {
@@ -263,10 +410,13 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
+	executor := newPoppitExecutor(cfg)
+	defer executor.Close()
+
 	startupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	queries, err := discoverQueries(startupCtx, cfg.Poppit.Directory)
+	queries, err := discoverQueries(startupCtx, executor)
 	if err != nil {
 		log.Fatalf("failed to discover queries: %v", err)
 	}
@@ -303,7 +453,7 @@ func main() {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
-		output, err := runQuery(ctx, cfg.Poppit.Directory, query)
+		output, err := runQuery(ctx, executor, query)
 		if err != nil {
 			data.Error = err.Error()
 			_ = tmpl.Execute(w, data)
