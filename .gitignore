@@ -33,7 +33,7 @@ config.yaml
 # build output
 bin/
 
-querylab
+/querylab
 
 # Editor/IDE
 # .idea/

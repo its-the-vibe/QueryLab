@@ -2,21 +2,21 @@
 
 [![CI](https://github.com/its-the-vibe/QueryLab/actions/workflows/ci.yaml/badge.svg)](https://github.com/its-the-vibe/QueryLab/actions/workflows/ci.yaml)
 
-A production-ready "Hello World" Go service with Redis integration, containerised using a distroless Docker image.
+A web front-end service for discovering and executing GoQuery queries via Poppit.
 
 ## Features
 
-- Prints **Gday World** on startup
-- Pings a Redis server at a configurable interval
-- Minimal distroless runtime image
-- Read-only container filesystem
-- Configuration via `config.yaml` + `REDIS_PASSWORD` environment variable
+- Discovers executable queries at startup by sending `./goquery --json list` through Poppit
+- Lets users run queries from a web UI by sending `./goquery --json query <query_name>` through Poppit
+- Renders query output in a tabular format
+- Configuration via `config.yaml` and optional env overrides
+- Container-ready (Dockerfile included)
 
 ## Prerequisites
 
 - [Go 1.24+](https://go.dev/dl/)
 - [Docker](https://docs.docker.com/get-docker/) & [Docker Compose](https://docs.docker.com/compose/)
-- An external Redis instance
+- A running [Poppit](https://github.com/its-the-vibe/Poppit) service connected to Redis
 
 ## Quick Start
 
@@ -27,10 +27,9 @@ A production-ready "Hello World" Go service with Redis integration, containerise
 cp config.example.yaml config.yaml
 cp .env.example .env
 
-# 2. Edit config.yaml to point to your Redis host/port
-# 3. Set REDIS_PASSWORD in .env
+# 2. Edit config.yaml for your Redis and Poppit settings
 
-# 4. Build and run
+# 3. Build and run
 make run
 ```
 
@@ -39,7 +38,7 @@ make run
 ```bash
 cp config.example.yaml config.yaml
 cp .env.example .env
-# Edit config.yaml and .env
+# Edit config.yaml and .env if needed
 
 make docker-up
 ```
@@ -48,19 +47,28 @@ make docker-up
 
 | File | Purpose |
 |------|---------|
-| `config.yaml` | Redis host/port and ping interval (git-ignored) |
+| `config.yaml` | Runtime configuration (git-ignored) |
 | `config.example.yaml` | Template – copy to `config.yaml` |
-| `.env` | `REDIS_PASSWORD` secret (git-ignored) |
+| `.env` | Sensitive environment variables (git-ignored) |
 | `.env.example` | Template – copy to `.env` |
 
 ### `config.yaml` options
 
 ```yaml
+server:
+  addr: ":8080"
 redis:
-  host: localhost
+  host: "localhost"
   port: 6379
-
-ping_interval_seconds: 5
+poppit:
+  repo: "its-the-vibe/QueryLab"
+  branch: "refs/heads/main"
+  type: "querylab-web"
+  dir: "/tmp"
+  source: "querylab"
+  notification_list: "poppit:notifications"
+  command_output_channel: "poppit:command-output"
+  command_timeout_seconds: 30
 ```
 
 ## Makefile targets
@@ -79,7 +87,7 @@ ping_interval_seconds: 5
 
 ```
 .
-├── cmd/querylab/   # Application entry point
+├── cmd/querylab/   # Web service entry point
 ├── .github/workflows/ci.yaml
 ├── config.example.yaml
 ├── .env.example
