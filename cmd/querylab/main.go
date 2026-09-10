@@ -565,7 +565,7 @@ func main() {
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Poppit.CommandTimeoutSecs)*time.Second)
 		defer cancel()
 
 		output, err := runSchema(ctx, executor, dataset, table)
@@ -576,7 +576,8 @@ func main() {
 
 		schemaFields, err := parseSchema(output)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to parse schema result: %v", err), http.StatusBadGateway)
+			log.Printf("failed to parse schema result for %s.%s: %v", dataset, table, err)
+			http.Error(w, "failed to parse schema result", http.StatusBadGateway)
 			return
 		}
 
