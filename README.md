@@ -71,6 +71,8 @@ poppit:
   command_output_channel: "poppit:command-output"
   command_timeout_seconds: 30
 schema:
+  allowed_origins:
+    - "http://localhost:8080"
   allowed_tables:
     - dataset: "example_dataset"
       table: "example_table"
@@ -78,7 +80,7 @@ schema:
 
 ### Schema API
 
-`POST /schema` accepts `dataset` and `table` form fields and returns the validated GoQuery schema JSON for allowlisted pairs.
+`POST /schema` accepts `dataset` and `table` form fields and returns the validated GoQuery schema JSON for allowlisted pairs. Requests must include an `Origin` or `Referer` header that matches a host listed in `schema.allowed_origins`.
 
 ## Makefile targets
 

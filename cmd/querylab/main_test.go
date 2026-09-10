@@ -195,18 +195,23 @@ func TestBuildAllowedSchemaTablesAndMatch(t *testing.T) {
 func TestIsTrustedRequestOrigin(t *testing.T) {
 	t.Parallel()
 
+	allowedHosts := buildAllowedOriginHosts([]string{
+		"https://querylab.local",
+		"https://app.querylab.local:8443",
+	})
+
 	tests := []struct {
 		name     string
 		origin   string
 		referer  string
-		host     string
 		expected bool
 	}{
-		{name: "matching origin", origin: "https://querylab.local", host: "querylab.local", expected: true},
-		{name: "mismatched origin", origin: "https://evil.example", host: "querylab.local", expected: false},
-		{name: "matching referer", referer: "https://querylab.local/schema", host: "querylab.local", expected: true},
-		{name: "mismatched referer", referer: "https://evil.example/schema", host: "querylab.local", expected: false},
-		{name: "no origin or referer", host: "querylab.local", expected: true},
+		{name: "matching origin", origin: "https://querylab.local", expected: true},
+		{name: "matching origin with configured port", origin: "https://app.querylab.local:8443", expected: true},
+		{name: "mismatched origin", origin: "https://evil.example", expected: false},
+		{name: "matching referer", referer: "https://querylab.local/schema", expected: true},
+		{name: "mismatched referer", referer: "https://evil.example/schema", expected: false},
+		{name: "no origin or referer", expected: false},
 	}
 
 	for _, tt := range tests {
@@ -217,16 +222,33 @@ func TestIsTrustedRequestOrigin(t *testing.T) {
 			if err != nil {
 				t.Fatalf("http.NewRequest() error = %v", err)
 			}
-			req.Host = tt.host
 			if tt.origin != "" {
 				req.Header.Set("Origin", tt.origin)
 			}
 			if tt.referer != "" {
 				req.Header.Set("Referer", tt.referer)
 			}
-			if got := isTrustedRequestOrigin(req); got != tt.expected {
+			if got := isTrustedRequestOrigin(req, allowedHosts); got != tt.expected {
 				t.Fatalf("isTrustedRequestOrigin() = %v, want %v", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestBuildAllowedOriginHosts(t *testing.T) {
+	t.Parallel()
+
+	hosts := buildAllowedOriginHosts([]string{
+		"https://querylab.local",
+		" https://QUERYLAB.local ",
+		"invalid",
+		"",
+	})
+
+	if len(hosts) != 1 {
+		t.Fatalf("len(hosts) = %d, want 1", len(hosts))
+	}
+	if _, ok := hosts["querylab.local"]; !ok {
+		t.Fatalf("expected querylab.local in allowed origin hosts")
 	}
 }

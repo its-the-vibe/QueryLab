@@ -39,7 +39,8 @@ type Config struct {
 		CommandTimeoutSecs   int    `mapstructure:"command_timeout_seconds"`
 	}
 	Schema struct {
-		AllowedTables []struct {
+		AllowedOrigins []string `mapstructure:"allowed_origins"`
+		AllowedTables  []struct {
 			Dataset string `mapstructure:"dataset"`
 			Table   string `mapstructure:"table"`
 		} `mapstructure:"allowed_tables"`
@@ -387,6 +388,22 @@ func isAllowedSchemaTable(allowed map[string]map[string]struct{}, dataset, table
 	return tableAllowed
 }
 
+func buildAllowedOriginHosts(origins []string) map[string]struct{} {
+	hosts := make(map[string]struct{})
+	for _, origin := range origins {
+		origin = strings.TrimSpace(origin)
+		if origin == "" {
+			continue
+		}
+		u, err := url.Parse(origin)
+		if err != nil || strings.TrimSpace(u.Host) == "" {
+			continue
+		}
+		hosts[strings.ToLower(u.Host)] = struct{}{}
+	}
+	return hosts
+}
+
 func convertRows(parsed any) []map[string]any {
 	switch typed := parsed.(type) {
 	case []any:
@@ -508,6 +525,7 @@ func main() {
 		available[query] = struct{}{}
 	}
 	allowedSchemaTables := buildAllowedSchemaTables(cfg.Schema.AllowedTables)
+	allowedSchemaOriginHosts := buildAllowedOriginHosts(cfg.Schema.AllowedOrigins)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -558,7 +576,7 @@ func main() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if !isTrustedRequestOrigin(r) {
+		if !isTrustedRequestOrigin(r, allowedSchemaOriginHosts) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -622,13 +640,18 @@ var signalNotifyContext = func(parent context.Context, signals ...os.Signal) (co
 	return signal.NotifyContext(parent, signals...)
 }
 
-func isTrustedRequestOrigin(r *http.Request) bool {
+func isTrustedRequestOrigin(r *http.Request, allowedHosts map[string]struct{}) bool {
+	if len(allowedHosts) == 0 {
+		return false
+	}
+
 	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
 		u, err := url.Parse(origin)
 		if err != nil {
 			return false
 		}
-		return strings.EqualFold(u.Host, r.Host)
+		_, ok := allowedHosts[strings.ToLower(u.Host)]
+		return ok
 	}
 
 	if referer := strings.TrimSpace(r.Header.Get("Referer")); referer != "" {
@@ -636,8 +659,9 @@ func isTrustedRequestOrigin(r *http.Request) bool {
 		if err != nil {
 			return false
 		}
-		return strings.EqualFold(u.Host, r.Host)
+		_, ok := allowedHosts[strings.ToLower(u.Host)]
+		return ok
 	}
 
-	return true
+	return false
 }
