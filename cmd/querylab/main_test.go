@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
 	"reflect"
 	"testing"
 )
@@ -137,6 +138,13 @@ func TestParseSchema(t *testing.T) {
 	if len(schemaFields) != 2 {
 		t.Fatalf("parseSchema() len = %d, want 2", len(schemaFields))
 	}
+	expected := []map[string]any{
+		{"name": "date", "type": "STRING", "mode": "NULLABLE", "description": "The date"},
+		{"name": "count", "type": "INTEGER", "mode": "REQUIRED"},
+	}
+	if !reflect.DeepEqual(schemaFields, expected) {
+		t.Fatalf("parseSchema() = %v, want %v", schemaFields, expected)
+	}
 }
 
 func TestParseSchemaRejectsInvalidOutput(t *testing.T) {
@@ -165,6 +173,7 @@ func TestBuildAllowedSchemaTablesAndMatch(t *testing.T) {
 	}{
 		{Dataset: "analytics", Table: "events"},
 		{Dataset: "analytics", Table: "users"},
+		{Dataset: " reporting ", Table: " daily "},
 		{Dataset: " ", Table: "ignored"},
 		{Dataset: "analytics", Table: " "},
 	})
@@ -177,5 +186,47 @@ func TestBuildAllowedSchemaTablesAndMatch(t *testing.T) {
 	}
 	if isAllowedSchemaTable(allowed, "missing", "events") {
 		t.Fatalf("expected missing.events to be rejected")
+	}
+	if !isAllowedSchemaTable(allowed, "reporting", "daily") {
+		t.Fatalf("expected trimmed reporting.daily to be allowed")
+	}
+}
+
+func TestIsTrustedRequestOrigin(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		origin   string
+		referer  string
+		host     string
+		expected bool
+	}{
+		{name: "matching origin", origin: "https://querylab.local", host: "querylab.local", expected: true},
+		{name: "mismatched origin", origin: "https://evil.example", host: "querylab.local", expected: false},
+		{name: "matching referer", referer: "https://querylab.local/schema", host: "querylab.local", expected: true},
+		{name: "mismatched referer", referer: "https://evil.example/schema", host: "querylab.local", expected: false},
+		{name: "no origin or referer", host: "querylab.local", expected: true},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req, err := http.NewRequest(http.MethodPost, "http://querylab.local/schema", nil)
+			if err != nil {
+				t.Fatalf("http.NewRequest() error = %v", err)
+			}
+			req.Host = tt.host
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+			if tt.referer != "" {
+				req.Header.Set("Referer", tt.referer)
+			}
+			if got := isTrustedRequestOrigin(req); got != tt.expected {
+				t.Fatalf("isTrustedRequestOrigin() = %v, want %v", got, tt.expected)
+			}
+		})
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sort"
@@ -557,6 +558,10 @@ func main() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		if !isTrustedRequestOrigin(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 
 		dataset := strings.TrimSpace(r.FormValue("dataset"))
 		table := strings.TrimSpace(r.FormValue("table"))
@@ -615,4 +620,24 @@ func signalContext() (context.Context, context.CancelFunc) {
 
 var signalNotifyContext = func(parent context.Context, signals ...os.Signal) (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(parent, signals...)
+}
+
+func isTrustedRequestOrigin(r *http.Request) bool {
+	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		return strings.EqualFold(u.Host, r.Host)
+	}
+
+	if referer := strings.TrimSpace(r.Header.Get("Referer")); referer != "" {
+		u, err := url.Parse(referer)
+		if err != nil {
+			return false
+		}
+		return strings.EqualFold(u.Host, r.Host)
+	}
+
+	return true
 }
