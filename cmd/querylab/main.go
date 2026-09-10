@@ -388,20 +388,27 @@ func isAllowedSchemaTable(allowed map[string]map[string]struct{}, dataset, table
 	return tableAllowed
 }
 
-func buildAllowedOriginHosts(origins []string) map[string]struct{} {
-	hosts := make(map[string]struct{})
+func buildAllowedOrigins(origins []string) map[string]struct{} {
+	allowed := make(map[string]struct{})
 	for _, origin := range origins {
 		origin = strings.TrimSpace(origin)
 		if origin == "" {
 			continue
 		}
 		u, err := url.Parse(origin)
-		if err != nil || strings.TrimSpace(u.Host) == "" {
+		if err != nil {
 			continue
 		}
-		hosts[strings.ToLower(u.Host)] = struct{}{}
+		if !u.IsAbs() || strings.TrimSpace(u.Host) == "" {
+			continue
+		}
+		scheme := strings.ToLower(u.Scheme)
+		if scheme != "http" && scheme != "https" {
+			continue
+		}
+		allowed[scheme+"://"+strings.ToLower(u.Host)] = struct{}{}
 	}
-	return hosts
+	return allowed
 }
 
 func convertRows(parsed any) []map[string]any {
@@ -525,7 +532,7 @@ func main() {
 		available[query] = struct{}{}
 	}
 	allowedSchemaTables := buildAllowedSchemaTables(cfg.Schema.AllowedTables)
-	allowedSchemaOriginHosts := buildAllowedOriginHosts(cfg.Schema.AllowedOrigins)
+	allowedSchemaOrigins := buildAllowedOrigins(cfg.Schema.AllowedOrigins)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -576,7 +583,7 @@ func main() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if !isTrustedRequestOrigin(r, allowedSchemaOriginHosts) {
+		if !isTrustedRequestOrigin(r, allowedSchemaOrigins) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -640,28 +647,34 @@ var signalNotifyContext = func(parent context.Context, signals ...os.Signal) (co
 	return signal.NotifyContext(parent, signals...)
 }
 
-func isTrustedRequestOrigin(r *http.Request, allowedHosts map[string]struct{}) bool {
-	if len(allowedHosts) == 0 {
+func isTrustedRequestOrigin(r *http.Request, allowedOrigins map[string]struct{}) bool {
+	if len(allowedOrigins) == 0 {
 		return false
 	}
 
 	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
-		u, err := url.Parse(origin)
-		if err != nil {
-			return false
-		}
-		_, ok := allowedHosts[strings.ToLower(u.Host)]
-		return ok
+		return originAllowed(origin, allowedOrigins)
 	}
 
 	if referer := strings.TrimSpace(r.Header.Get("Referer")); referer != "" {
-		u, err := url.Parse(referer)
-		if err != nil {
-			return false
-		}
-		_, ok := allowedHosts[strings.ToLower(u.Host)]
-		return ok
+		return originAllowed(referer, allowedOrigins)
 	}
 
 	return false
+}
+
+func originAllowed(value string, allowedOrigins map[string]struct{}) bool {
+	u, err := url.Parse(value)
+	if err != nil {
+		return false
+	}
+	if !u.IsAbs() || strings.TrimSpace(u.Host) == "" {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	_, ok := allowedOrigins[scheme+"://"+strings.ToLower(u.Host)]
+	return ok
 }

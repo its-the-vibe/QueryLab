@@ -195,7 +195,7 @@ func TestBuildAllowedSchemaTablesAndMatch(t *testing.T) {
 func TestIsTrustedRequestOrigin(t *testing.T) {
 	t.Parallel()
 
-	allowedHosts := buildAllowedOriginHosts([]string{
+	allowedOrigins := buildAllowedOrigins([]string{
 		"https://querylab.local",
 		"https://app.querylab.local:8443",
 	})
@@ -208,6 +208,8 @@ func TestIsTrustedRequestOrigin(t *testing.T) {
 	}{
 		{name: "matching origin", origin: "https://querylab.local", expected: true},
 		{name: "matching origin with configured port", origin: "https://app.querylab.local:8443", expected: true},
+		{name: "wrong scheme for allowed host", origin: "http://querylab.local", expected: false},
+		{name: "non-http scheme", origin: "file://querylab.local/tmp", expected: false},
 		{name: "mismatched origin", origin: "https://evil.example", expected: false},
 		{name: "matching referer", referer: "https://querylab.local/schema", expected: true},
 		{name: "mismatched referer", referer: "https://evil.example/schema", expected: false},
@@ -228,27 +230,28 @@ func TestIsTrustedRequestOrigin(t *testing.T) {
 			if tt.referer != "" {
 				req.Header.Set("Referer", tt.referer)
 			}
-			if got := isTrustedRequestOrigin(req, allowedHosts); got != tt.expected {
+			if got := isTrustedRequestOrigin(req, allowedOrigins); got != tt.expected {
 				t.Fatalf("isTrustedRequestOrigin() = %v, want %v", got, tt.expected)
 			}
 		})
 	}
 }
 
-func TestBuildAllowedOriginHosts(t *testing.T) {
+func TestBuildAllowedOrigins(t *testing.T) {
 	t.Parallel()
 
-	hosts := buildAllowedOriginHosts([]string{
+	origins := buildAllowedOrigins([]string{
 		"https://querylab.local",
 		" https://QUERYLAB.local ",
+		"ftp://querylab.local",
 		"invalid",
 		"",
 	})
 
-	if len(hosts) != 1 {
-		t.Fatalf("len(hosts) = %d, want 1", len(hosts))
+	if len(origins) != 1 {
+		t.Fatalf("len(origins) = %d, want 1", len(origins))
 	}
-	if _, ok := hosts["querylab.local"]; !ok {
-		t.Fatalf("expected querylab.local in allowed origin hosts")
+	if _, ok := origins["https://querylab.local"]; !ok {
+		t.Fatalf("expected https://querylab.local in allowed origins")
 	}
 }
