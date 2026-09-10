@@ -330,7 +330,7 @@ func parseSchema(output []byte) ([]map[string]any, error) {
 	}
 
 	fields, ok := parsed.([]any)
-	if !ok || len(fields) == 0 {
+	if !ok {
 		return nil, fmt.Errorf("schema output did not contain fields")
 	}
 
@@ -588,8 +588,12 @@ func main() {
 			return
 		}
 
-		dataset := strings.TrimSpace(r.FormValue("dataset"))
-		table := strings.TrimSpace(r.FormValue("table"))
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form data", http.StatusBadRequest)
+			return
+		}
+		dataset := strings.TrimSpace(r.PostForm.Get("dataset"))
+		table := strings.TrimSpace(r.PostForm.Get("table"))
 		if !isAllowedSchemaTable(allowedSchemaTables, dataset, table) {
 			http.Error(w, "dataset/table is not allowed", http.StatusBadRequest)
 			return

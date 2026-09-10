@@ -152,7 +152,6 @@ func TestParseSchemaRejectsInvalidOutput(t *testing.T) {
 
 	invalidOutputs := [][]byte{
 		[]byte(`{}`),
-		[]byte(`[]`),
 		[]byte(`[{"name":"date"}]`),
 		[]byte(`[{"name":"date","type":"STRING","mode":123}]`),
 	}
@@ -161,6 +160,18 @@ func TestParseSchemaRejectsInvalidOutput(t *testing.T) {
 		if _, err := parseSchema(output); err == nil {
 			t.Fatalf("parseSchema(%s) expected error, got nil", string(output))
 		}
+	}
+}
+
+func TestParseSchemaAllowsEmptyArray(t *testing.T) {
+	t.Parallel()
+
+	schemaFields, err := parseSchema([]byte(`[]`))
+	if err != nil {
+		t.Fatalf("parseSchema() error = %v", err)
+	}
+	if len(schemaFields) != 0 {
+		t.Fatalf("parseSchema() len = %d, want 0", len(schemaFields))
 	}
 }
 
