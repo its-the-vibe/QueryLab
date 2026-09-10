@@ -82,6 +82,25 @@ func TestRunQueryBuildsQuotedCommand(t *testing.T) {
 	}
 }
 
+func TestRunSchemaBuildsQuotedCommand(t *testing.T) {
+	t.Parallel()
+
+	expectedCommand := "./goquery --json schema " + shellQuote("analytics-prod") + " " + shellQuote("team's_table")
+	exec := &fakeExecutor{
+		commandOutput: map[string][]byte{
+			expectedCommand: []byte(`[]`),
+		},
+	}
+
+	if _, err := runSchema(context.Background(), exec, "analytics-prod", "team's_table"); err != nil {
+		t.Fatalf("runSchema() error = %v", err)
+	}
+
+	if exec.lastCommand != expectedCommand {
+		t.Fatalf("last command = %q, want %q", exec.lastCommand, expectedCommand)
+	}
+}
+
 func TestParseRowsAndBuildTable(t *testing.T) {
 	t.Parallel()
 
@@ -100,5 +119,63 @@ func TestParseRowsAndBuildTable(t *testing.T) {
 	}
 	if !reflect.DeepEqual(tableRows, expectedRows) {
 		t.Fatalf("tableRows = %v, want %v", tableRows, expectedRows)
+	}
+}
+
+func TestParseSchema(t *testing.T) {
+	t.Parallel()
+
+	output := []byte(`[
+		{"name":"date","type":"STRING","mode":"NULLABLE","description":"The date"},
+		{"name":"count","type":"INTEGER","mode":"REQUIRED"}
+	]`)
+
+	schemaFields, err := parseSchema(output)
+	if err != nil {
+		t.Fatalf("parseSchema() error = %v", err)
+	}
+	if len(schemaFields) != 2 {
+		t.Fatalf("parseSchema() len = %d, want 2", len(schemaFields))
+	}
+}
+
+func TestParseSchemaRejectsInvalidOutput(t *testing.T) {
+	t.Parallel()
+
+	invalidOutputs := [][]byte{
+		[]byte(`{}`),
+		[]byte(`[]`),
+		[]byte(`[{"name":"date"}]`),
+		[]byte(`[{"name":"date","type":"STRING","mode":123}]`),
+	}
+
+	for _, output := range invalidOutputs {
+		if _, err := parseSchema(output); err == nil {
+			t.Fatalf("parseSchema(%s) expected error, got nil", string(output))
+		}
+	}
+}
+
+func TestBuildAllowedSchemaTablesAndMatch(t *testing.T) {
+	t.Parallel()
+
+	allowed := buildAllowedSchemaTables([]struct {
+		Dataset string `mapstructure:"dataset"`
+		Table   string `mapstructure:"table"`
+	}{
+		{Dataset: "analytics", Table: "events"},
+		{Dataset: "analytics", Table: "users"},
+		{Dataset: " ", Table: "ignored"},
+		{Dataset: "analytics", Table: " "},
+	})
+
+	if !isAllowedSchemaTable(allowed, "analytics", "events") {
+		t.Fatalf("expected analytics.events to be allowed")
+	}
+	if isAllowedSchemaTable(allowed, "analytics", "missing") {
+		t.Fatalf("expected analytics.missing to be rejected")
+	}
+	if isAllowedSchemaTable(allowed, "missing", "events") {
+		t.Fatalf("expected missing.events to be rejected")
 	}
 }

@@ -37,6 +37,12 @@ type Config struct {
 		CommandOutputChannel string `mapstructure:"command_output_channel"`
 		CommandTimeoutSecs   int    `mapstructure:"command_timeout_seconds"`
 	}
+	Schema struct {
+		AllowedTables []struct {
+			Dataset string `mapstructure:"dataset"`
+			Table   string `mapstructure:"table"`
+		} `mapstructure:"allowed_tables"`
+	}
 }
 
 func loadConfig() (*Config, error) {
@@ -289,6 +295,15 @@ func runQuery(ctx context.Context, executor commandExecutor, query string) ([]by
 	return output, nil
 }
 
+func runSchema(ctx context.Context, executor commandExecutor, dataset, table string) ([]byte, error) {
+	command := fmt.Sprintf("./goquery --json schema %s %s", shellQuote(dataset), shellQuote(table))
+	output, err := executor.Execute(ctx, command)
+	if err != nil {
+		return nil, fmt.Errorf("running goquery schema %q.%q via poppit: %w", dataset, table, err)
+	}
+	return output, nil
+}
+
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
@@ -304,6 +319,71 @@ func parseRows(output []byte) ([]map[string]any, error) {
 		return nil, fmt.Errorf("query output did not contain tabular rows")
 	}
 	return rows, nil
+}
+
+func parseSchema(output []byte) ([]map[string]any, error) {
+	var parsed any
+	if err := json.Unmarshal(output, &parsed); err != nil {
+		return nil, err
+	}
+
+	fields, ok := parsed.([]any)
+	if !ok || len(fields) == 0 {
+		return nil, fmt.Errorf("schema output did not contain fields")
+	}
+
+	result := make([]map[string]any, 0, len(fields))
+	for _, field := range fields {
+		record, ok := field.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("schema output contained a non-object field")
+		}
+		name, hasName := record["name"].(string)
+		typ, hasType := record["type"].(string)
+		if !hasName || strings.TrimSpace(name) == "" || !hasType || strings.TrimSpace(typ) == "" {
+			return nil, fmt.Errorf("schema output contained a field without required name/type")
+		}
+		if mode, ok := record["mode"]; ok {
+			if _, modeIsString := mode.(string); !modeIsString {
+				return nil, fmt.Errorf("schema output contained a field with non-string mode")
+			}
+		}
+		if description, ok := record["description"]; ok {
+			if _, descriptionIsString := description.(string); !descriptionIsString {
+				return nil, fmt.Errorf("schema output contained a field with non-string description")
+			}
+		}
+		result = append(result, record)
+	}
+	return result, nil
+}
+
+func buildAllowedSchemaTables(entries []struct {
+	Dataset string `mapstructure:"dataset"`
+	Table   string `mapstructure:"table"`
+}) map[string]map[string]struct{} {
+	allowed := make(map[string]map[string]struct{})
+	for _, entry := range entries {
+		dataset := strings.TrimSpace(entry.Dataset)
+		table := strings.TrimSpace(entry.Table)
+		if dataset == "" || table == "" {
+			continue
+		}
+		if _, ok := allowed[dataset]; !ok {
+			allowed[dataset] = make(map[string]struct{})
+		}
+		allowed[dataset][table] = struct{}{}
+	}
+	return allowed
+}
+
+func isAllowedSchemaTable(allowed map[string]map[string]struct{}, dataset, table string) bool {
+	tables, datasetAllowed := allowed[dataset]
+	if !datasetAllowed {
+		return false
+	}
+	_, tableAllowed := tables[table]
+	return tableAllowed
 }
 
 func convertRows(parsed any) []map[string]any {
@@ -426,6 +506,7 @@ func main() {
 	for _, query := range queries {
 		available[query] = struct{}{}
 	}
+	allowedSchemaTables := buildAllowedSchemaTables(cfg.Schema.AllowedTables)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -469,6 +550,40 @@ func main() {
 
 		data.Columns, data.Rows = buildTable(rows)
 		_ = tmpl.Execute(w, data)
+	})
+
+	mux.HandleFunc("/schema", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		dataset := strings.TrimSpace(r.FormValue("dataset"))
+		table := strings.TrimSpace(r.FormValue("table"))
+		if !isAllowedSchemaTable(allowedSchemaTables, dataset, table) {
+			http.Error(w, "dataset/table is not allowed", http.StatusBadRequest)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+
+		output, err := runSchema(ctx, executor, dataset, table)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+
+		schemaFields, err := parseSchema(output)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to parse schema result: %v", err), http.StatusBadGateway)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(schemaFields); err != nil {
+			http.Error(w, "failed to encode schema result", http.StatusInternalServerError)
+		}
 	})
 
 	srv := &http.Server{

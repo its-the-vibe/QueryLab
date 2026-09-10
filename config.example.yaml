@@ -20,3 +20,9 @@ poppit:
   notification_list: "poppit:notifications"
   command_output_channel: "poppit:command-output"
   command_timeout_seconds: 30
+
+schema:
+  # Allowlist of dataset/table pairs for ./goquery --json schema <dataset> <table>
+  allowed_tables:
+    - dataset: "example_dataset"
+      table: "example_table"
