@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
 	"reflect"
 	"testing"
 )
@@ -82,6 +83,25 @@ func TestRunQueryBuildsQuotedCommand(t *testing.T) {
 	}
 }
 
+func TestRunSchemaBuildsQuotedCommand(t *testing.T) {
+	t.Parallel()
+
+	expectedCommand := "./goquery --json schema " + shellQuote("analytics-prod") + " " + shellQuote("team's_table")
+	exec := &fakeExecutor{
+		commandOutput: map[string][]byte{
+			expectedCommand: []byte(`[]`),
+		},
+	}
+
+	if _, err := runSchema(context.Background(), exec, "analytics-prod", "team's_table"); err != nil {
+		t.Fatalf("runSchema() error = %v", err)
+	}
+
+	if exec.lastCommand != expectedCommand {
+		t.Fatalf("last command = %q, want %q", exec.lastCommand, expectedCommand)
+	}
+}
+
 func TestParseRowsAndBuildTable(t *testing.T) {
 	t.Parallel()
 
@@ -100,5 +120,205 @@ func TestParseRowsAndBuildTable(t *testing.T) {
 	}
 	if !reflect.DeepEqual(tableRows, expectedRows) {
 		t.Fatalf("tableRows = %v, want %v", tableRows, expectedRows)
+	}
+}
+
+func TestParseSchema(t *testing.T) {
+	t.Parallel()
+
+	output := []byte(`[
+		{"name":"date","type":"STRING","mode":"NULLABLE","description":"The date"},
+		{"name":"count","type":"INTEGER","mode":"REQUIRED"}
+	]`)
+
+	schemaFields, err := parseSchema(output)
+	if err != nil {
+		t.Fatalf("parseSchema() error = %v", err)
+	}
+	if len(schemaFields) != 2 {
+		t.Fatalf("parseSchema() len = %d, want 2", len(schemaFields))
+	}
+	expected := []map[string]any{
+		{"name": "date", "type": "STRING", "mode": "NULLABLE", "description": "The date"},
+		{"name": "count", "type": "INTEGER", "mode": "REQUIRED"},
+	}
+	if !reflect.DeepEqual(schemaFields, expected) {
+		t.Fatalf("parseSchema() = %v, want %v", schemaFields, expected)
+	}
+}
+
+func TestParseSchemaRejectsInvalidOutput(t *testing.T) {
+	t.Parallel()
+
+	invalidOutputs := [][]byte{
+		[]byte(`{}`),
+		[]byte(`[{"name":"date"}]`),
+		[]byte(`[{"name":"date","type":"STRING","mode":123}]`),
+	}
+
+	for _, output := range invalidOutputs {
+		if _, err := parseSchema(output); err == nil {
+			t.Fatalf("parseSchema(%s) expected error, got nil", string(output))
+		}
+	}
+}
+
+func TestParseSchemaAllowsEmptyArray(t *testing.T) {
+	t.Parallel()
+
+	schemaFields, err := parseSchema([]byte(`[]`))
+	if err != nil {
+		t.Fatalf("parseSchema() error = %v", err)
+	}
+	if len(schemaFields) != 0 {
+		t.Fatalf("parseSchema() len = %d, want 0", len(schemaFields))
+	}
+}
+
+func TestBuildAllowedSchemaTablesAndMatch(t *testing.T) {
+	t.Parallel()
+
+	allowed := buildAllowedSchemaTables([]struct {
+		Dataset string `mapstructure:"dataset"`
+		Table   string `mapstructure:"table"`
+	}{
+		{Dataset: "analytics", Table: "events"},
+		{Dataset: "analytics", Table: "users"},
+		{Dataset: " reporting ", Table: " daily "},
+		{Dataset: " ", Table: "ignored"},
+		{Dataset: "analytics", Table: " "},
+	})
+
+	if !isAllowedSchemaTable(allowed, "analytics", "events") {
+		t.Fatalf("expected analytics.events to be allowed")
+	}
+	if isAllowedSchemaTable(allowed, "analytics", "missing") {
+		t.Fatalf("expected analytics.missing to be rejected")
+	}
+	if isAllowedSchemaTable(allowed, "missing", "events") {
+		t.Fatalf("expected missing.events to be rejected")
+	}
+	if !isAllowedSchemaTable(allowed, "reporting", "daily") {
+		t.Fatalf("expected trimmed reporting.daily to be allowed")
+	}
+}
+
+func TestIsTrustedRequestOrigin(t *testing.T) {
+	t.Parallel()
+
+	allowedOrigins := buildAllowedOrigins([]string{
+		"https://querylab.local",
+		"https://app.querylab.local:8443",
+	})
+
+	tests := []struct {
+		name     string
+		origin   string
+		referer  string
+		expected bool
+	}{
+		{name: "matching origin", origin: "https://querylab.local", expected: true},
+		{name: "matching origin with configured port", origin: "https://app.querylab.local:8443", expected: true},
+		{name: "wrong scheme for allowed host", origin: "http://querylab.local", expected: false},
+		{name: "non-http scheme", origin: "file://querylab.local/tmp", expected: false},
+		{name: "mismatched origin", origin: "https://evil.example", expected: false},
+		{name: "matching referer", referer: "https://querylab.local/schema", expected: true},
+		{name: "mismatched referer", referer: "https://evil.example/schema", expected: false},
+		{name: "no origin or referer", expected: false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req, err := http.NewRequest(http.MethodPost, "http://querylab.local/schema", nil)
+			if err != nil {
+				t.Fatalf("http.NewRequest() error = %v", err)
+			}
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+			if tt.referer != "" {
+				req.Header.Set("Referer", tt.referer)
+			}
+			if got := isTrustedRequestOrigin(req, allowedOrigins); got != tt.expected {
+				t.Fatalf("isTrustedRequestOrigin() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestBuildAllowedOrigins(t *testing.T) {
+	t.Parallel()
+
+	origins := buildAllowedOrigins([]string{
+		"https://querylab.local",
+		" https://QUERYLAB.local ",
+		"ftp://querylab.local",
+		"invalid",
+		"",
+	})
+
+	if len(origins) != 1 {
+		t.Fatalf("len(origins) = %d, want 1", len(origins))
+	}
+	if _, ok := origins["https://querylab.local"]; !ok {
+		t.Fatalf("expected https://querylab.local in allowed origins")
+	}
+}
+
+func TestBuildSchemaSelections(t *testing.T) {
+	t.Parallel()
+
+	datasets, schemaTablesByDataset := buildSchemaSelections(map[string]map[string]struct{}{
+		"beta": {"b2": {}, "b1": {}},
+		"alpha": {"a1": {}},
+	})
+
+	expectedDatasets := []string{"alpha", "beta"}
+	if !reflect.DeepEqual(datasets, expectedDatasets) {
+		t.Fatalf("datasets = %v, want %v", datasets, expectedDatasets)
+	}
+	expectedTables := map[string][]string{
+		"alpha": {"a1"},
+		"beta":  {"b1", "b2"},
+	}
+	if !reflect.DeepEqual(schemaTablesByDataset, expectedTables) {
+		t.Fatalf("schemaTablesByDataset = %v, want %v", schemaTablesByDataset, expectedTables)
+	}
+}
+
+func TestSelectSchemaDatasetAndTable(t *testing.T) {
+	t.Parallel()
+
+	schemaDatasets := []string{"alpha", "beta"}
+	schemaTablesByDataset := map[string][]string{
+		"alpha": {"a1", "a2"},
+		"beta":  {"b1"},
+	}
+
+	tests := []struct {
+		name            string
+		selectedDataset string
+		selectedTable   string
+		wantDataset     string
+		wantTable       string
+	}{
+		{name: "defaults to first values", wantDataset: "alpha", wantTable: "a1"},
+		{name: "keeps valid selection", selectedDataset: "alpha", selectedTable: "a2", wantDataset: "alpha", wantTable: "a2"},
+		{name: "falls back invalid table", selectedDataset: "alpha", selectedTable: "missing", wantDataset: "alpha", wantTable: "a1"},
+		{name: "selects default table for dataset", selectedDataset: "beta", wantDataset: "beta", wantTable: "b1"},
+		{name: "empty options", selectedDataset: "missing", selectedTable: "missing", wantDataset: "missing", wantTable: ""},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotDataset, gotTable := selectSchemaDatasetAndTable(schemaDatasets, schemaTablesByDataset, tt.selectedDataset, tt.selectedTable)
+			if gotDataset != tt.wantDataset || gotTable != tt.wantTable {
+				t.Fatalf("selectSchemaDatasetAndTable() = (%q, %q), want (%q, %q)", gotDataset, gotTable, tt.wantDataset, tt.wantTable)
+			}
+		})
 	}
 }

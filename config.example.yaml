@@ -20,3 +20,12 @@ poppit:
   notification_list: "poppit:notifications"
   command_output_channel: "poppit:command-output"
   command_timeout_seconds: 30
+
+schema:
+  # Trusted web origins allowed to call POST /schema (must include scheme and host)
+  allowed_origins:
+    - "http://localhost:8080"
+  # Allowlist of dataset/table pairs for ./goquery --json schema <dataset> <table>
+  allowed_tables:
+    - dataset: "example_dataset"
+      table: "example_table"
