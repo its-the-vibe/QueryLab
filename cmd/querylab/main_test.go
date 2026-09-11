@@ -266,3 +266,59 @@ func TestBuildAllowedOrigins(t *testing.T) {
 		t.Fatalf("expected https://querylab.local in allowed origins")
 	}
 }
+
+func TestBuildSchemaSelections(t *testing.T) {
+	t.Parallel()
+
+	datasets, schemaTablesByDataset := buildSchemaSelections(map[string]map[string]struct{}{
+		"beta": {"b2": {}, "b1": {}},
+		"alpha": {"a1": {}},
+	})
+
+	expectedDatasets := []string{"alpha", "beta"}
+	if !reflect.DeepEqual(datasets, expectedDatasets) {
+		t.Fatalf("datasets = %v, want %v", datasets, expectedDatasets)
+	}
+	expectedTables := map[string][]string{
+		"alpha": {"a1"},
+		"beta":  {"b1", "b2"},
+	}
+	if !reflect.DeepEqual(schemaTablesByDataset, expectedTables) {
+		t.Fatalf("schemaTablesByDataset = %v, want %v", schemaTablesByDataset, expectedTables)
+	}
+}
+
+func TestSelectSchemaDatasetAndTable(t *testing.T) {
+	t.Parallel()
+
+	schemaDatasets := []string{"alpha", "beta"}
+	schemaTablesByDataset := map[string][]string{
+		"alpha": {"a1", "a2"},
+		"beta":  {"b1"},
+	}
+
+	tests := []struct {
+		name            string
+		selectedDataset string
+		selectedTable   string
+		wantDataset     string
+		wantTable       string
+	}{
+		{name: "defaults to first values", wantDataset: "alpha", wantTable: "a1"},
+		{name: "keeps valid selection", selectedDataset: "alpha", selectedTable: "a2", wantDataset: "alpha", wantTable: "a2"},
+		{name: "falls back invalid table", selectedDataset: "alpha", selectedTable: "missing", wantDataset: "alpha", wantTable: "a1"},
+		{name: "selects default table for dataset", selectedDataset: "beta", wantDataset: "beta", wantTable: "b1"},
+		{name: "empty options", selectedDataset: "missing", selectedTable: "missing", wantDataset: "missing", wantTable: ""},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotDataset, gotTable := selectSchemaDatasetAndTable(schemaDatasets, schemaTablesByDataset, tt.selectedDataset, tt.selectedTable)
+			if gotDataset != tt.wantDataset || gotTable != tt.wantTable {
+				t.Fatalf("selectSchemaDatasetAndTable() = (%q, %q), want (%q, %q)", gotDataset, gotTable, tt.wantDataset, tt.wantTable)
+			}
+		})
+	}
+}

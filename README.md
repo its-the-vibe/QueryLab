@@ -8,6 +8,7 @@ A web front-end service for discovering and executing GoQuery queries via Poppit
 
 - Discovers executable queries at startup by sending `./goquery --json list` through Poppit
 - Lets users run queries from a web UI by sending `./goquery --json query <query_name>` through Poppit
+- Lets users run GoQuery `schema` from the web UI with selectable dataset/table options
 - Exposes `POST /schema` for allowed dataset/table pairs, running `./goquery --json schema <dataset> <table>` through Poppit
 - Renders query output in a tabular format
 - Configuration via `config.yaml` and optional env overrides
@@ -81,6 +82,10 @@ schema:
 ### Schema API
 
 `POST /schema` accepts `dataset` and `table` form fields and returns the validated GoQuery schema JSON for allowlisted pairs. Requests must include an `Origin` or `Referer` header that matches a host listed in `schema.allowed_origins`.
+
+### Schema UI
+
+The main QueryLab page includes a schema form with dataset and table selectors populated from `schema.allowed_tables`. Submitting the form runs the schema command and renders the returned schema in the existing tabular UI.
 
 ## Makefile targets
 

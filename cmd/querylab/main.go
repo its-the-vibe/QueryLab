@@ -462,11 +462,16 @@ func buildTable(rows []map[string]any) ([]string, [][]string) {
 }
 
 type pageData struct {
-	Queries  []string
-	Selected string
-	Columns  []string
-	Rows     [][]string
-	Error    string
+	Queries               []string
+	SelectedQuery         string
+	SchemaDatasets        []string
+	SchemaTablesByDataset map[string][]string
+	SchemaTablesJSON      template.JS
+	SelectedDataset       string
+	SelectedTable         string
+	Columns               []string
+	Rows                  [][]string
+	Error                 string
 }
 
 const pageTemplate = `
@@ -489,10 +494,21 @@ const pageTemplate = `
     <label for="query">Available query</label>
     <select id="query" name="query" required>
       {{range .Queries}}
-        <option value="{{.}}" {{if eq $.Selected .}}selected{{end}}>{{.}}</option>
+        <option value="{{.}}" {{if eq $.SelectedQuery .}}selected{{end}}>{{.}}</option>
       {{end}}
     </select>
     <button type="submit">Run</button>
+  </form>
+  <form method="post" action="/schema/execute" style="margin-top: 1rem;">
+    <label for="dataset">Dataset</label>
+    <select id="dataset" name="dataset" required>
+      {{range .SchemaDatasets}}
+        <option value="{{.}}" {{if eq $.SelectedDataset .}}selected{{end}}>{{.}}</option>
+      {{end}}
+    </select>
+    <label for="table">Table</label>
+    <select id="table" name="table" required></select>
+    <button type="submit">Schema</button>
   </form>
   {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
   {{if .Rows}}
@@ -505,9 +521,72 @@ const pageTemplate = `
       </tbody>
     </table>
   {{end}}
+  <script>
+    const schemaTablesByDataset = {{.SchemaTablesJSON}};
+    const tableSelect = document.getElementById('table');
+    const selectedTable = {{printf "%q" .SelectedTable}};
+    function refreshSchemaTables() {
+      const dataset = document.getElementById('dataset').value;
+      const tables = schemaTablesByDataset[dataset] || [];
+      tableSelect.innerHTML = '';
+      for (const table of tables) {
+        const option = document.createElement('option');
+        option.value = table;
+        option.textContent = table;
+        if (table === selectedTable) {
+          option.selected = true;
+        }
+        tableSelect.appendChild(option);
+      }
+    }
+    document.getElementById('dataset').addEventListener('change', refreshSchemaTables);
+    refreshSchemaTables();
+  </script>
 </body>
 </html>
 `
+
+func buildSchemaSelections(allowedSchemaTables map[string]map[string]struct{}) ([]string, map[string][]string) {
+	datasets := make([]string, 0, len(allowedSchemaTables))
+	schemaTablesByDataset := make(map[string][]string, len(allowedSchemaTables))
+	for dataset, tables := range allowedSchemaTables {
+		datasets = append(datasets, dataset)
+		tableNames := make([]string, 0, len(tables))
+		for table := range tables {
+			tableNames = append(tableNames, table)
+		}
+		sort.Strings(tableNames)
+		schemaTablesByDataset[dataset] = tableNames
+	}
+	sort.Strings(datasets)
+	return datasets, schemaTablesByDataset
+}
+
+func selectSchemaDatasetAndTable(schemaDatasets []string, schemaTablesByDataset map[string][]string, selectedDataset, selectedTable string) (string, string) {
+	selectedDataset = strings.TrimSpace(selectedDataset)
+	selectedTable = strings.TrimSpace(selectedTable)
+
+	if selectedDataset == "" {
+		if len(schemaDatasets) == 0 {
+			return "", ""
+		}
+		selectedDataset = schemaDatasets[0]
+	}
+
+	tables := schemaTablesByDataset[selectedDataset]
+	if len(tables) == 0 {
+		return selectedDataset, ""
+	}
+	if selectedTable == "" {
+		return selectedDataset, tables[0]
+	}
+	for _, table := range tables {
+		if table == selectedTable {
+			return selectedDataset, selectedTable
+		}
+	}
+	return selectedDataset, tables[0]
+}
 
 func main() {
 	cfg, err := loadConfig()
@@ -533,6 +612,24 @@ func main() {
 	}
 	allowedSchemaTables := buildAllowedSchemaTables(cfg.Schema.AllowedTables)
 	allowedSchemaOrigins := buildAllowedOrigins(cfg.Schema.AllowedOrigins)
+	schemaDatasets, schemaTablesByDataset := buildSchemaSelections(allowedSchemaTables)
+	schemaTablesJSONBytes, err := json.Marshal(schemaTablesByDataset)
+	if err != nil {
+		log.Fatalf("failed to marshal schema table options: %v", err)
+	}
+	schemaTablesJSON := template.JS(string(schemaTablesJSONBytes))
+
+	newPageData := func() pageData {
+		selectedDataset, selectedTable := selectSchemaDatasetAndTable(schemaDatasets, schemaTablesByDataset, "", "")
+		return pageData{
+			Queries:               queries,
+			SchemaDatasets:        schemaDatasets,
+			SchemaTablesByDataset: schemaTablesByDataset,
+			SchemaTablesJSON:      schemaTablesJSON,
+			SelectedDataset:       selectedDataset,
+			SelectedTable:         selectedTable,
+		}
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -540,7 +637,7 @@ func main() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		_ = tmpl.Execute(w, pageData{Queries: queries})
+		_ = tmpl.Execute(w, newPageData())
 	})
 
 	mux.HandleFunc("/execute", func(w http.ResponseWriter, r *http.Request) {
@@ -550,7 +647,8 @@ func main() {
 		}
 
 		query := strings.TrimSpace(r.FormValue("query"))
-		data := pageData{Queries: queries, Selected: query}
+		data := newPageData()
+		data.SelectedQuery = query
 		if _, ok := available[query]; !ok {
 			data.Error = "invalid query selected"
 			_ = tmpl.Execute(w, data)
@@ -575,6 +673,49 @@ func main() {
 		}
 
 		data.Columns, data.Rows = buildTable(rows)
+		_ = tmpl.Execute(w, data)
+	})
+
+	mux.HandleFunc("/schema/execute", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form data", http.StatusBadRequest)
+			return
+		}
+
+		dataset := strings.TrimSpace(r.PostForm.Get("dataset"))
+		table := strings.TrimSpace(r.PostForm.Get("table"))
+		data := newPageData()
+		data.SelectedDataset, data.SelectedTable = selectSchemaDatasetAndTable(schemaDatasets, schemaTablesByDataset, dataset, table)
+
+		if !isAllowedSchemaTable(allowedSchemaTables, dataset, table) {
+			data.Error = "invalid dataset/table selected"
+			_ = tmpl.Execute(w, data)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Poppit.CommandTimeoutSecs)*time.Second)
+		defer cancel()
+
+		output, err := runSchema(ctx, executor, dataset, table)
+		if err != nil {
+			data.Error = err.Error()
+			_ = tmpl.Execute(w, data)
+			return
+		}
+
+		schemaFields, err := parseSchema(output)
+		if err != nil {
+			log.Printf("failed to parse schema result for %s.%s: %v", dataset, table, err)
+			data.Error = "failed to parse schema result"
+			_ = tmpl.Execute(w, data)
+			return
+		}
+
+		data.Columns, data.Rows = buildTable(schemaFields)
 		_ = tmpl.Execute(w, data)
 	})
 
