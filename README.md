@@ -85,7 +85,7 @@ schema:
 
 ### Schema UI
 
-The main QueryLab page includes a schema form with dataset and table selectors populated from `schema.allowed_tables`. Submitting the form runs the schema command and renders the returned schema in the existing tabular UI.
+The `/queries` page is dedicated to running discovered queries. The `/schema` page is dedicated to inspecting allowed dataset/table pairs, with selectors populated from `schema.allowed_tables`. Both pages use GET-based forms, so the selected operation is reflected in the URL and can be refreshed or bookmarked. The schema page shares its path with the API: GET renders the UI, while POST continues to return schema JSON.
 
 ## Makefile targets
 

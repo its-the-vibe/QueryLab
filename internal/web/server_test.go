@@ -110,20 +110,34 @@ func TestServerExecutesOnlyDiscoveredQueries(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	invalidRequest := httptest.NewRequest(http.MethodPost, "/execute", strings.NewReader("query=unknown"))
-	invalidRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	homeResponse := httptest.NewRecorder()
+	server.Handler.ServeHTTP(homeResponse, httptest.NewRequest(http.MethodGet, "/", nil))
+	if homeResponse.Code != http.StatusSeeOther || homeResponse.Header().Get("Location") != "/queries" {
+		t.Fatalf("home response = (%d, %q), want redirect to /queries", homeResponse.Code, homeResponse.Header().Get("Location"))
+	}
+
+	queryPageResponse := httptest.NewRecorder()
+	server.Handler.ServeHTTP(queryPageResponse, httptest.NewRequest(http.MethodGet, "/queries", nil))
+	if queryPageResponse.Code != http.StatusOK || !strings.Contains(queryPageResponse.Body.String(), "Run a query") {
+		t.Fatalf("query page response = (%d, %q), want query page", queryPageResponse.Code, queryPageResponse.Body.String())
+	}
+	if strings.Contains(queryPageResponse.Body.String(), `action="/schema"`) {
+		t.Fatalf("query page unexpectedly contains the schema form: %q", queryPageResponse.Body.String())
+	}
+
+	invalidRequest := httptest.NewRequest(http.MethodGet, "/queries?query=unknown", nil)
 	invalidResponse := httptest.NewRecorder()
 	server.Handler.ServeHTTP(invalidResponse, invalidRequest)
 	if invalidResponse.Code != http.StatusOK || !strings.Contains(invalidResponse.Body.String(), "invalid query selected") {
 		t.Fatalf("invalid query response = (%d, %q), want 200 and validation error", invalidResponse.Code, invalidResponse.Body.String())
 	}
 
-	validRequest := httptest.NewRequest(http.MethodPost, "/execute", strings.NewReader("query=known"))
-	validRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	validResponse := httptest.NewRecorder()
-	server.Handler.ServeHTTP(validResponse, validRequest)
-	if validResponse.Code != http.StatusOK || !strings.Contains(validResponse.Body.String(), "<td>1</td>") {
-		t.Fatalf("valid query response = (%d, %q), want rendered query result", validResponse.Code, validResponse.Body.String())
+	for refresh := 0; refresh < 2; refresh++ {
+		validResponse := httptest.NewRecorder()
+		server.Handler.ServeHTTP(validResponse, httptest.NewRequest(http.MethodGet, "/queries?query=known", nil))
+		if validResponse.Code != http.StatusOK || !strings.Contains(validResponse.Body.String(), "<td>1</td>") {
+			t.Fatalf("valid query response = (%d, %q), want rendered query result", validResponse.Code, validResponse.Body.String())
+		}
 	}
 }
 
@@ -142,6 +156,23 @@ func TestSchemaAPIEnforcesOriginAndTableAllowlist(t *testing.T) {
 	server, err := NewServer(cfg, executor)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	schemaPageResponse := httptest.NewRecorder()
+	server.Handler.ServeHTTP(schemaPageResponse, httptest.NewRequest(http.MethodGet, "/schema", nil))
+	if schemaPageResponse.Code != http.StatusOK || !strings.Contains(schemaPageResponse.Body.String(), "Inspect a schema") {
+		t.Fatalf("schema page response = (%d, %q), want schema page", schemaPageResponse.Code, schemaPageResponse.Body.String())
+	}
+	if strings.Contains(schemaPageResponse.Body.String(), `action="/queries"`) {
+		t.Fatalf("schema page unexpectedly contains the query form: %q", schemaPageResponse.Body.String())
+	}
+
+	for refresh := 0; refresh < 2; refresh++ {
+		schemaUIResponse := httptest.NewRecorder()
+		server.Handler.ServeHTTP(schemaUIResponse, httptest.NewRequest(http.MethodGet, "/schema?dataset=analytics&table=events", nil))
+		if schemaUIResponse.Code != http.StatusOK || !strings.Contains(schemaUIResponse.Body.String(), "<td>id</td>") {
+			t.Fatalf("schema UI response = (%d, %q), want rendered schema result", schemaUIResponse.Code, schemaUIResponse.Body.String())
+		}
 	}
 
 	newRequest := func(dataset, table string) *http.Request {

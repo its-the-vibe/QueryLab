@@ -130,7 +130,8 @@ func NewServer(cfg *config.Config, executor queryservice.Executor) (*http.Server
 		return nil, fmt.Errorf("discovering queries: %w", err)
 	}
 
-	tmpl := template.Must(template.New("page").Parse(pageTemplate))
+	queryTmpl := template.Must(template.New("queries").Parse(queriesPageTemplate))
+	schemaTmpl := template.Must(template.New("schema").Parse(schemaPageTemplate))
 	available := make(map[string]struct{}, len(queries))
 	for _, query := range queries {
 		available[query] = struct{}{}
@@ -162,128 +163,123 @@ func NewServer(cfg *config.Config, executor queryservice.Executor) (*http.Server
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		_ = tmpl.Execute(w, newPageData())
+		http.Redirect(w, r, "/queries", http.StatusSeeOther)
 	})
 
-	mux.HandleFunc("/execute", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
+	mux.HandleFunc("/queries", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		query := strings.TrimSpace(r.FormValue("query"))
 		data := newPageData()
-		data.SelectedQuery = query
-		if _, ok := available[query]; !ok {
-			data.Error = "invalid query selected"
-			_ = tmpl.Execute(w, data)
-			return
+		if queryValues, exists := r.URL.Query()["query"]; exists {
+			query := strings.TrimSpace(queryValues[0])
+			data.SelectedQuery = query
+			if _, ok := available[query]; !ok {
+				data.Error = "invalid query selected"
+				_ = queryTmpl.Execute(w, data)
+				return
+			}
+
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			defer cancel()
+
+			output, err := queryService.RunQuery(ctx, query)
+			if err != nil {
+				data.Error = err.Error()
+				_ = queryTmpl.Execute(w, data)
+				return
+			}
+
+			rows, err := queryservice.ParseRows(output)
+			if err != nil {
+				data.Error = fmt.Sprintf("failed to parse query result: %v", err)
+				_ = queryTmpl.Execute(w, data)
+				return
+			}
+
+			data.Columns, data.Rows = queryservice.BuildTable(rows)
 		}
-
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		defer cancel()
-
-		output, err := queryService.RunQuery(ctx, query)
-		if err != nil {
-			data.Error = err.Error()
-			_ = tmpl.Execute(w, data)
-			return
-		}
-
-		rows, err := queryservice.ParseRows(output)
-		if err != nil {
-			data.Error = fmt.Sprintf("failed to parse query result: %v", err)
-			_ = tmpl.Execute(w, data)
-			return
-		}
-
-		data.Columns, data.Rows = queryservice.BuildTable(rows)
-		_ = tmpl.Execute(w, data)
-	})
-
-	mux.HandleFunc("/schema/execute", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "invalid form data", http.StatusBadRequest)
-			return
-		}
-
-		dataset := strings.TrimSpace(r.PostForm.Get("dataset"))
-		table := strings.TrimSpace(r.PostForm.Get("table"))
-		data := newPageData()
-		data.SelectedDataset, data.SelectedTable = selectSchemaDatasetAndTable(schemaDatasets, schemaTablesByDataset, dataset, table)
-
-		if !isAllowedSchemaTable(allowedSchemaTables, dataset, table) {
-			data.Error = "invalid dataset/table selected"
-			_ = tmpl.Execute(w, data)
-			return
-		}
-
-		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Poppit.CommandTimeoutSeconds)*time.Second)
-		defer cancel()
-
-		output, err := queryService.RunSchema(ctx, dataset, table)
-		if err != nil {
-			data.Error = err.Error()
-			_ = tmpl.Execute(w, data)
-			return
-		}
-
-		schemaFields, err := queryservice.ParseSchema(output)
-		if err != nil {
-			log.Printf("failed to parse schema result for %s.%s: %v", dataset, table, err)
-			data.Error = "failed to parse schema result"
-			_ = tmpl.Execute(w, data)
-			return
-		}
-
-		data.Columns, data.Rows = queryservice.BuildTable(schemaFields)
-		_ = tmpl.Execute(w, data)
+		_ = queryTmpl.Execute(w, data)
 	})
 
 	mux.HandleFunc("/schema", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
+		switch r.Method {
+		case http.MethodGet:
+			data := newPageData()
+			if datasetValues, datasetSet := r.URL.Query()["dataset"]; datasetSet {
+				table := r.URL.Query().Get("table")
+				dataset := strings.TrimSpace(datasetValues[0])
+				table = strings.TrimSpace(table)
+				data.SelectedDataset, data.SelectedTable = selectSchemaDatasetAndTable(schemaDatasets, schemaTablesByDataset, dataset, table)
+
+				if !isAllowedSchemaTable(allowedSchemaTables, dataset, table) {
+					data.Error = "invalid dataset/table selected"
+					_ = schemaTmpl.Execute(w, data)
+					return
+				}
+
+				ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Poppit.CommandTimeoutSeconds)*time.Second)
+				defer cancel()
+
+				output, err := queryService.RunSchema(ctx, dataset, table)
+				if err != nil {
+					data.Error = err.Error()
+					_ = schemaTmpl.Execute(w, data)
+					return
+				}
+
+				schemaFields, err := queryservice.ParseSchema(output)
+				if err != nil {
+					log.Printf("failed to parse schema result for %s.%s: %v", dataset, table, err)
+					data.Error = "failed to parse schema result"
+					_ = schemaTmpl.Execute(w, data)
+					return
+				}
+
+				data.Columns, data.Rows = queryservice.BuildTable(schemaFields)
+			}
+			_ = schemaTmpl.Execute(w, data)
+		case http.MethodPost:
+			if !isTrustedRequestOrigin(r, allowedSchemaOrigins) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, "invalid form data", http.StatusBadRequest)
+				return
+			}
+			dataset := strings.TrimSpace(r.PostForm.Get("dataset"))
+			table := strings.TrimSpace(r.PostForm.Get("table"))
+			if !isAllowedSchemaTable(allowedSchemaTables, dataset, table) {
+				http.Error(w, "dataset/table is not allowed", http.StatusBadRequest)
+				return
+			}
+
+			ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Poppit.CommandTimeoutSeconds)*time.Second)
+			defer cancel()
+
+			output, err := queryService.RunSchema(ctx, dataset, table)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+
+			schemaFields, err := queryservice.ParseSchema(output)
+			if err != nil {
+				log.Printf("failed to parse schema result for %s.%s: %v", dataset, table, err)
+				http.Error(w, "failed to parse schema result", http.StatusBadGateway)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(schemaFields); err != nil {
+				http.Error(w, "failed to encode schema result", http.StatusInternalServerError)
+			}
+		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if !isTrustedRequestOrigin(r, allowedSchemaOrigins) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "invalid form data", http.StatusBadRequest)
-			return
-		}
-		dataset := strings.TrimSpace(r.PostForm.Get("dataset"))
-		table := strings.TrimSpace(r.PostForm.Get("table"))
-		if !isAllowedSchemaTable(allowedSchemaTables, dataset, table) {
-			http.Error(w, "dataset/table is not allowed", http.StatusBadRequest)
-			return
-		}
-
-		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Poppit.CommandTimeoutSeconds)*time.Second)
-		defer cancel()
-
-		output, err := queryService.RunSchema(ctx, dataset, table)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-
-		schemaFields, err := queryservice.ParseSchema(output)
-		if err != nil {
-			log.Printf("failed to parse schema result for %s.%s: %v", dataset, table, err)
-			http.Error(w, "failed to parse schema result", http.StatusBadGateway)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(schemaFields); err != nil {
-			http.Error(w, "failed to encode schema result", http.StatusInternalServerError)
 		}
 	})
 
