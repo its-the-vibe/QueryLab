@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"reflect"
@@ -12,6 +13,56 @@ type fakeExecutor struct {
 	commandOutput map[string][]byte
 	err           error
 	lastCommand   string
+}
+
+func TestBuildNotificationIncludesSpamMetadata(t *testing.T) {
+	t.Parallel()
+
+	executor := &poppitExecutor{
+		repo:        "its-the-vibe/QueryLab",
+		branch:      "refs/heads/main",
+		commandType: "querylab-web",
+		dir:         "/tmp",
+		source:      "querylab",
+	}
+
+	notification := executor.buildNotification("./goquery --json list", "task-123")
+	if notification.Metadata["spam"] != false {
+		t.Fatalf("notification spam metadata = %v, want false", notification.Metadata["spam"])
+	}
+	if notification.Metadata["taskId"] != "task-123" {
+		t.Fatalf("notification taskId metadata = %q, want %q", notification.Metadata["taskId"], "task-123")
+	}
+
+	payload, err := json.Marshal(notification)
+	if err != nil {
+		t.Fatalf("json.Marshal(notification) error = %v", err)
+	}
+	var decoded struct {
+		Metadata map[string]interface{} `json:"metadata"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(notification) error = %v", err)
+	}
+	if spam, ok := decoded.Metadata["spam"].(bool); !ok || spam {
+		t.Fatalf("marshalled spam metadata = %v, want boolean false", decoded.Metadata["spam"])
+	}
+}
+
+func TestPoppitCommandOutputAllowsBooleanMetadata(t *testing.T) {
+	t.Parallel()
+
+	var output poppitCommandOutput
+	err := json.Unmarshal([]byte(`{"metadata":{"taskId":"task-123","spam":false},"command":"query","output":"ok"}`), &output)
+	if err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if output.Metadata["taskId"] != "task-123" {
+		t.Fatalf("taskId metadata = %v, want %q", output.Metadata["taskId"], "task-123")
+	}
+	if spam, ok := output.Metadata["spam"].(bool); !ok || spam {
+		t.Fatalf("spam metadata = %v, want boolean false", output.Metadata["spam"])
+	}
 }
 
 func (f *fakeExecutor) Execute(_ context.Context, command string) ([]byte, error) {

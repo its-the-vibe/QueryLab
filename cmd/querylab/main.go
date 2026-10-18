@@ -109,22 +109,23 @@ type poppitExecutor struct {
 	commandTimeout      time.Duration
 }
 
+// poppitNotification's "spam" metadata flag lets consumers suppress logging for noisy notifications.
 type poppitNotification struct {
-	Repo     string            `json:"repo"`
-	Branch   string            `json:"branch"`
-	Type     string            `json:"type"`
-	Dir      string            `json:"dir"`
-	Commands []string          `json:"commands"`
-	Metadata map[string]string `json:"metadata,omitempty"`
+	Repo     string                 `json:"repo"`
+	Branch   string                 `json:"branch"`
+	Type     string                 `json:"type"`
+	Dir      string                 `json:"dir"`
+	Commands []string               `json:"commands"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
 type poppitCommandOutput struct {
-	Metadata   map[string]string `json:"metadata"`
-	Type       string            `json:"type"`
-	Command    string            `json:"command"`
-	Output     string            `json:"output"`
-	Stderr     string            `json:"stderr"`
-	StatusCode int               `json:"status_code"`
+	Metadata   map[string]interface{} `json:"metadata"`
+	Type       string                 `json:"type"`
+	Command    string                 `json:"command"`
+	Output     string                 `json:"output"`
+	Stderr     string                 `json:"stderr"`
+	StatusCode int                    `json:"status_code"`
 }
 
 func newPoppitExecutor(cfg *Config) *poppitExecutor {
@@ -148,6 +149,21 @@ func (e *poppitExecutor) Close() error {
 	return e.redisClient.Close()
 }
 
+func (e *poppitExecutor) buildNotification(command, taskID string) poppitNotification {
+	return poppitNotification{
+		Repo:     e.repo,
+		Branch:   e.branch,
+		Type:     e.commandType,
+		Dir:      e.dir,
+		Commands: []string{command},
+		Metadata: map[string]interface{}{
+			"taskId": taskID,
+			"source": e.source,
+			"spam":   false,
+		},
+	}
+}
+
 func (e *poppitExecutor) Execute(ctx context.Context, command string) ([]byte, error) {
 	taskID := fmt.Sprintf("querylab-%d", time.Now().UnixNano())
 
@@ -161,17 +177,7 @@ func (e *poppitExecutor) Execute(ctx context.Context, command string) ([]byte, e
 	}
 	defer pubsub.Close()
 
-	notification := poppitNotification{
-		Repo:     e.repo,
-		Branch:   e.branch,
-		Type:     e.commandType,
-		Dir:      e.dir,
-		Commands: []string{command},
-		Metadata: map[string]string{
-			"taskId": taskID,
-			"source": e.source,
-		},
-	}
+	notification := e.buildNotification(command, taskID)
 
 	payload, err := json.Marshal(notification)
 	if err != nil {
@@ -195,7 +201,8 @@ func (e *poppitExecutor) Execute(ctx context.Context, command string) ([]byte, e
 		if err := json.Unmarshal([]byte(msg.Payload), &output); err != nil {
 			continue
 		}
-		if output.Metadata["taskId"] != taskID {
+		outputTaskID, ok := output.Metadata["taskId"].(string)
+		if !ok || outputTaskID != taskID {
 			continue
 		}
 		if output.Command != command {
