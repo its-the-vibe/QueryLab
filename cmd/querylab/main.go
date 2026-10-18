@@ -111,12 +111,12 @@ type poppitExecutor struct {
 
 // poppitNotification's "spam" metadata flag lets consumers suppress logging for noisy notifications.
 type poppitNotification struct {
-	Repo     string            `json:"repo"`
-	Branch   string            `json:"branch"`
-	Type     string            `json:"type"`
-	Dir      string            `json:"dir"`
-	Commands []string          `json:"commands"`
-	Metadata map[string]string `json:"metadata,omitempty"`
+	Repo     string                 `json:"repo"`
+	Branch   string                 `json:"branch"`
+	Type     string                 `json:"type"`
+	Dir      string                 `json:"dir"`
+	Commands []string               `json:"commands"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
 type poppitCommandOutput struct {
@@ -156,10 +156,10 @@ func (e *poppitExecutor) buildNotification(command, taskID string) poppitNotific
 		Type:     e.commandType,
 		Dir:      e.dir,
 		Commands: []string{command},
-		Metadata: map[string]string{
+		Metadata: map[string]interface{}{
 			"taskId": taskID,
 			"source": e.source,
-			"spam":   "false",
+			"spam":   false,
 		},
 	}
 }
