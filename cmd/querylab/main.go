@@ -120,12 +120,12 @@ type poppitNotification struct {
 }
 
 type poppitCommandOutput struct {
-	Metadata   map[string]string `json:"metadata"`
-	Type       string            `json:"type"`
-	Command    string            `json:"command"`
-	Output     string            `json:"output"`
-	Stderr     string            `json:"stderr"`
-	StatusCode int               `json:"status_code"`
+	Metadata   map[string]interface{} `json:"metadata"`
+	Type       string                 `json:"type"`
+	Command    string                 `json:"command"`
+	Output     string                 `json:"output"`
+	Stderr     string                 `json:"stderr"`
+	StatusCode int                    `json:"status_code"`
 }
 
 func newPoppitExecutor(cfg *Config) *poppitExecutor {
@@ -201,7 +201,8 @@ func (e *poppitExecutor) Execute(ctx context.Context, command string) ([]byte, e
 		if err := json.Unmarshal([]byte(msg.Payload), &output); err != nil {
 			continue
 		}
-		if output.Metadata["taskId"] != taskID {
+		outputTaskID, ok := output.Metadata["taskId"].(string)
+		if !ok || outputTaskID != taskID {
 			continue
 		}
 		if output.Command != command {

@@ -49,6 +49,22 @@ func TestBuildNotificationIncludesSpamMetadata(t *testing.T) {
 	}
 }
 
+func TestPoppitCommandOutputAllowsBooleanMetadata(t *testing.T) {
+	t.Parallel()
+
+	var output poppitCommandOutput
+	err := json.Unmarshal([]byte(`{"metadata":{"taskId":"task-123","spam":false},"command":"query","output":"ok"}`), &output)
+	if err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if output.Metadata["taskId"] != "task-123" {
+		t.Fatalf("taskId metadata = %v, want %q", output.Metadata["taskId"], "task-123")
+	}
+	if spam, ok := output.Metadata["spam"].(bool); !ok || spam {
+		t.Fatalf("spam metadata = %v, want boolean false", output.Metadata["spam"])
+	}
+}
+
 func (f *fakeExecutor) Execute(_ context.Context, command string) ([]byte, error) {
 	f.lastCommand = command
 	if f.err != nil {
