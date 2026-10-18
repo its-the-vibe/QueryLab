@@ -109,6 +109,7 @@ type poppitExecutor struct {
 	commandTimeout      time.Duration
 }
 
+// poppitNotification's "spam" metadata flag lets consumers suppress logging for noisy notifications.
 type poppitNotification struct {
 	Repo     string            `json:"repo"`
 	Branch   string            `json:"branch"`
@@ -148,6 +149,21 @@ func (e *poppitExecutor) Close() error {
 	return e.redisClient.Close()
 }
 
+func (e *poppitExecutor) buildNotification(command, taskID string) poppitNotification {
+	return poppitNotification{
+		Repo:     e.repo,
+		Branch:   e.branch,
+		Type:     e.commandType,
+		Dir:      e.dir,
+		Commands: []string{command},
+		Metadata: map[string]string{
+			"taskId": taskID,
+			"source": e.source,
+			"spam":   "false",
+		},
+	}
+}
+
 func (e *poppitExecutor) Execute(ctx context.Context, command string) ([]byte, error) {
 	taskID := fmt.Sprintf("querylab-%d", time.Now().UnixNano())
 
@@ -161,17 +177,7 @@ func (e *poppitExecutor) Execute(ctx context.Context, command string) ([]byte, e
 	}
 	defer pubsub.Close()
 
-	notification := poppitNotification{
-		Repo:     e.repo,
-		Branch:   e.branch,
-		Type:     e.commandType,
-		Dir:      e.dir,
-		Commands: []string{command},
-		Metadata: map[string]string{
-			"taskId": taskID,
-			"source": e.source,
-		},
-	}
+	notification := e.buildNotification(command, taskID)
 
 	payload, err := json.Marshal(notification)
 	if err != nil {

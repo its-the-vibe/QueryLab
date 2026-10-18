@@ -14,6 +14,26 @@ type fakeExecutor struct {
 	lastCommand   string
 }
 
+func TestBuildNotificationIncludesSpamMetadata(t *testing.T) {
+	t.Parallel()
+
+	executor := &poppitExecutor{
+		repo:        "its-the-vibe/QueryLab",
+		branch:      "refs/heads/main",
+		commandType: "querylab-web",
+		dir:         "/tmp",
+		source:      "querylab",
+	}
+
+	notification := executor.buildNotification("./goquery --json list", "task-123")
+	if notification.Metadata["spam"] != "false" {
+		t.Fatalf("notification spam metadata = %q, want %q", notification.Metadata["spam"], "false")
+	}
+	if notification.Metadata["taskId"] != "task-123" {
+		t.Fatalf("notification taskId metadata = %q, want %q", notification.Metadata["taskId"], "task-123")
+	}
+}
+
 func (f *fakeExecutor) Execute(_ context.Context, command string) ([]byte, error) {
 	f.lastCommand = command
 	if f.err != nil {
