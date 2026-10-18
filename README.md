@@ -103,7 +103,12 @@ The main QueryLab page includes a schema form with dataset and table selectors p
 
 ```
 .
-├── cmd/querylab/   # Web service entry point
+├── cmd/querylab/   # Application startup and graceful shutdown
+├── internal/
+│   ├── config/     # YAML, defaults, and environment configuration
+│   ├── poppit/     # Redis-backed Poppit command executor
+│   ├── query/      # GoQuery execution and result parsing
+│   └── web/        # HTTP handlers and UI templates
 ├── .github/workflows/ci.yaml
 ├── config.example.yaml
 ├── .env.example
@@ -113,3 +118,5 @@ The main QueryLab page includes a schema form with dataset and table selectors p
 ├── go.mod / go.sum
 └── README.md
 ```
+
+The web server receives the query service's command executor through an interface, so handlers and query parsing can be tested without Redis. Runtime configuration is loaded independently by `internal/config`.

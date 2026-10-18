@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/its-the-vibe/QueryLab/internal/config"
@@ -26,155 +28,6 @@ func (f *fakeExecutor) Execute(_ context.Context, command string) ([]byte, error
 		return nil, errors.New("unknown command")
 	}
 	return output, nil
-}
-
-func TestParseQueryList(t *testing.T) {
-	t.Parallel()
-
-	output := []byte(`{"queries":[{"name":"beta"},{"name":"alpha"},"gamma"]}`)
-	queries, err := parseQueryList(output)
-	if err != nil {
-		t.Fatalf("parseQueryList() error = %v", err)
-	}
-
-	expected := []string{"beta", "alpha", "gamma"}
-	if !reflect.DeepEqual(queries, expected) {
-		t.Fatalf("parseQueryList() = %v, want %v", queries, expected)
-	}
-}
-
-func TestDiscoverQueriesUsesPoppitCommandAndSorts(t *testing.T) {
-	t.Parallel()
-
-	exec := &fakeExecutor{
-		commandOutput: map[string][]byte{
-			"./goquery --json list": []byte(`["zeta","alpha","zeta"]`),
-		},
-	}
-
-	queries, err := discoverQueries(context.Background(), exec)
-	if err != nil {
-		t.Fatalf("discoverQueries() error = %v", err)
-	}
-
-	expected := []string{"alpha", "zeta"}
-	if !reflect.DeepEqual(queries, expected) {
-		t.Fatalf("discoverQueries() = %v, want %v", queries, expected)
-	}
-	if exec.lastCommand != "./goquery --json list" {
-		t.Fatalf("last command = %q, want %q", exec.lastCommand, "./goquery --json list")
-	}
-}
-
-func TestRunQueryBuildsQuotedCommand(t *testing.T) {
-	t.Parallel()
-
-	expectedCommand := "./goquery --json query " + shellQuote("team's")
-	exec := &fakeExecutor{
-		commandOutput: map[string][]byte{
-			expectedCommand: []byte(`[]`),
-		},
-	}
-
-	if _, err := runQuery(context.Background(), exec, "team's"); err != nil {
-		t.Fatalf("runQuery() error = %v", err)
-	}
-
-	if exec.lastCommand != expectedCommand {
-		t.Fatalf("last command = %q, want %q", exec.lastCommand, expectedCommand)
-	}
-}
-
-func TestRunSchemaBuildsQuotedCommand(t *testing.T) {
-	t.Parallel()
-
-	expectedCommand := "./goquery --json schema " + shellQuote("analytics-prod") + " " + shellQuote("team's_table")
-	exec := &fakeExecutor{
-		commandOutput: map[string][]byte{
-			expectedCommand: []byte(`[]`),
-		},
-	}
-
-	if _, err := runSchema(context.Background(), exec, "analytics-prod", "team's_table"); err != nil {
-		t.Fatalf("runSchema() error = %v", err)
-	}
-
-	if exec.lastCommand != expectedCommand {
-		t.Fatalf("last command = %q, want %q", exec.lastCommand, expectedCommand)
-	}
-}
-
-func TestParseRowsAndBuildTable(t *testing.T) {
-	t.Parallel()
-
-	output := []byte(`{"rows":[{"name":"alice","count":2},{"name":"bob","count":5}]}`)
-	rows, err := parseRows(output)
-	if err != nil {
-		t.Fatalf("parseRows() error = %v", err)
-	}
-
-	columns, tableRows := buildTable(rows)
-	expectedColumns := []string{"count", "name"}
-	expectedRows := [][]string{{"2", "alice"}, {"5", "bob"}}
-
-	if !reflect.DeepEqual(columns, expectedColumns) {
-		t.Fatalf("columns = %v, want %v", columns, expectedColumns)
-	}
-	if !reflect.DeepEqual(tableRows, expectedRows) {
-		t.Fatalf("tableRows = %v, want %v", tableRows, expectedRows)
-	}
-}
-
-func TestParseSchema(t *testing.T) {
-	t.Parallel()
-
-	output := []byte(`[
-		{"name":"date","type":"STRING","mode":"NULLABLE","description":"The date"},
-		{"name":"count","type":"INTEGER","mode":"REQUIRED"}
-	]`)
-
-	schemaFields, err := parseSchema(output)
-	if err != nil {
-		t.Fatalf("parseSchema() error = %v", err)
-	}
-	if len(schemaFields) != 2 {
-		t.Fatalf("parseSchema() len = %d, want 2", len(schemaFields))
-	}
-	expected := []map[string]any{
-		{"name": "date", "type": "STRING", "mode": "NULLABLE", "description": "The date"},
-		{"name": "count", "type": "INTEGER", "mode": "REQUIRED"},
-	}
-	if !reflect.DeepEqual(schemaFields, expected) {
-		t.Fatalf("parseSchema() = %v, want %v", schemaFields, expected)
-	}
-}
-
-func TestParseSchemaRejectsInvalidOutput(t *testing.T) {
-	t.Parallel()
-
-	invalidOutputs := [][]byte{
-		[]byte(`{}`),
-		[]byte(`[{"name":"date"}]`),
-		[]byte(`[{"name":"date","type":"STRING","mode":123}]`),
-	}
-
-	for _, output := range invalidOutputs {
-		if _, err := parseSchema(output); err == nil {
-			t.Fatalf("parseSchema(%s) expected error, got nil", string(output))
-		}
-	}
-}
-
-func TestParseSchemaAllowsEmptyArray(t *testing.T) {
-	t.Parallel()
-
-	schemaFields, err := parseSchema([]byte(`[]`))
-	if err != nil {
-		t.Fatalf("parseSchema() error = %v", err)
-	}
-	if len(schemaFields) != 0 {
-		t.Fatalf("parseSchema() len = %d, want 0", len(schemaFields))
-	}
 }
 
 func TestBuildAllowedSchemaTablesAndMatch(t *testing.T) {
@@ -244,6 +97,79 @@ func TestIsTrustedRequestOrigin(t *testing.T) {
 				t.Fatalf("isTrustedRequestOrigin() = %v, want %v", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestServerExecutesOnlyDiscoveredQueries(t *testing.T) {
+	executor := &fakeExecutor{commandOutput: map[string][]byte{
+		"./goquery --json list":          []byte(`["known"]`),
+		"./goquery --json query 'known'": []byte(`{"rows":[{"count":1}]}`),
+	}}
+	server, err := NewServer(&config.Config{}, executor)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	invalidRequest := httptest.NewRequest(http.MethodPost, "/execute", strings.NewReader("query=unknown"))
+	invalidRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	invalidResponse := httptest.NewRecorder()
+	server.Handler.ServeHTTP(invalidResponse, invalidRequest)
+	if invalidResponse.Code != http.StatusOK || !strings.Contains(invalidResponse.Body.String(), "invalid query selected") {
+		t.Fatalf("invalid query response = (%d, %q), want 200 and validation error", invalidResponse.Code, invalidResponse.Body.String())
+	}
+
+	validRequest := httptest.NewRequest(http.MethodPost, "/execute", strings.NewReader("query=known"))
+	validRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	validResponse := httptest.NewRecorder()
+	server.Handler.ServeHTTP(validResponse, validRequest)
+	if validResponse.Code != http.StatusOK || !strings.Contains(validResponse.Body.String(), "<td>1</td>") {
+		t.Fatalf("valid query response = (%d, %q), want rendered query result", validResponse.Code, validResponse.Body.String())
+	}
+}
+
+func TestSchemaAPIEnforcesOriginAndTableAllowlist(t *testing.T) {
+	cfg := &config.Config{
+		Poppit: config.PoppitConfig{CommandTimeoutSeconds: 1},
+		Schema: config.SchemaConfig{
+			AllowedOrigins: []string{"https://querylab.local"},
+			AllowedTables:  []config.AllowedTable{{Dataset: "analytics", Table: "events"}},
+		},
+	}
+	executor := &fakeExecutor{commandOutput: map[string][]byte{
+		"./goquery --json list":                        []byte(`["known"]`),
+		"./goquery --json schema 'analytics' 'events'": []byte(`[{"name":"id","type":"INTEGER"}]`),
+	}}
+	server, err := NewServer(cfg, executor)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	newRequest := func(dataset, table string) *http.Request {
+		request := httptest.NewRequest(http.MethodPost, "/schema", strings.NewReader("dataset="+dataset+"&table="+table))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return request
+	}
+
+	untrustedResponse := httptest.NewRecorder()
+	server.Handler.ServeHTTP(untrustedResponse, newRequest("analytics", "events"))
+	if untrustedResponse.Code != http.StatusForbidden {
+		t.Fatalf("untrusted origin status = %d, want %d", untrustedResponse.Code, http.StatusForbidden)
+	}
+
+	disallowedRequest := newRequest("analytics", "private")
+	disallowedRequest.Header.Set("Origin", "https://querylab.local")
+	disallowedResponse := httptest.NewRecorder()
+	server.Handler.ServeHTTP(disallowedResponse, disallowedRequest)
+	if disallowedResponse.Code != http.StatusBadRequest {
+		t.Fatalf("disallowed table status = %d, want %d", disallowedResponse.Code, http.StatusBadRequest)
+	}
+
+	allowedRequest := newRequest("analytics", "events")
+	allowedRequest.Header.Set("Origin", "https://querylab.local")
+	allowedResponse := httptest.NewRecorder()
+	server.Handler.ServeHTTP(allowedResponse, allowedRequest)
+	if allowedResponse.Code != http.StatusOK || !strings.Contains(allowedResponse.Body.String(), `"name":"id"`) {
+		t.Fatalf("allowed schema response = (%d, %q), want schema JSON", allowedResponse.Code, allowedResponse.Body.String())
 	}
 }
 

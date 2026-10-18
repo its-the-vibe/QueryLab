@@ -13,164 +13,8 @@ import (
 	"time"
 
 	"github.com/its-the-vibe/QueryLab/internal/config"
+	queryservice "github.com/its-the-vibe/QueryLab/internal/query"
 )
-
-// CommandExecutor runs commands requested by the web interface.
-type CommandExecutor interface {
-	Execute(ctx context.Context, command string) ([]byte, error)
-}
-
-func discoverQueries(ctx context.Context, executor CommandExecutor) ([]string, error) {
-	output, err := executor.Execute(ctx, "./goquery --json list")
-	if err != nil {
-		return nil, fmt.Errorf("running goquery list via poppit: %w", err)
-	}
-
-	queries, err := parseQueryList(output)
-	if err != nil {
-		return nil, fmt.Errorf("parsing goquery list output: %w", err)
-	}
-
-	sort.Strings(queries)
-	return queries, nil
-}
-
-func parseQueryList(output []byte) ([]string, error) {
-	var parsed any
-	if err := json.Unmarshal(output, &parsed); err != nil {
-		return nil, err
-	}
-
-	var out []string
-	add := func(v string) {
-		v = strings.TrimSpace(v)
-		if v != "" {
-			out = append(out, v)
-		}
-	}
-
-	switch typed := parsed.(type) {
-	case []any:
-		for _, item := range typed {
-			switch t := item.(type) {
-			case string:
-				add(t)
-			case map[string]any:
-				if n, ok := t["name"].(string); ok {
-					add(n)
-				} else if q, ok := t["query"].(string); ok {
-					add(q)
-				}
-			}
-		}
-	case map[string]any:
-		for _, key := range []string{"queries", "data", "results"} {
-			entries, ok := typed[key].([]any)
-			if !ok {
-				continue
-			}
-			for _, item := range entries {
-				switch t := item.(type) {
-				case string:
-					add(t)
-				case map[string]any:
-					if n, ok := t["name"].(string); ok {
-						add(n)
-					} else if q, ok := t["query"].(string); ok {
-						add(q)
-					}
-				}
-			}
-		}
-	}
-
-	if len(out) == 0 {
-		return nil, fmt.Errorf("no executable queries found")
-	}
-
-	unique := make(map[string]struct{}, len(out))
-	result := make([]string, 0, len(out))
-	for _, q := range out {
-		if _, ok := unique[q]; ok {
-			continue
-		}
-		unique[q] = struct{}{}
-		result = append(result, q)
-	}
-	return result, nil
-}
-
-func runQuery(ctx context.Context, executor CommandExecutor, query string) ([]byte, error) {
-	command := fmt.Sprintf("./goquery --json query %s", shellQuote(query))
-	output, err := executor.Execute(ctx, command)
-	if err != nil {
-		return nil, fmt.Errorf("running goquery query %q via poppit: %w", query, err)
-	}
-	return output, nil
-}
-
-func runSchema(ctx context.Context, executor CommandExecutor, dataset, table string) ([]byte, error) {
-	command := fmt.Sprintf("./goquery --json schema %s %s", shellQuote(dataset), shellQuote(table))
-	output, err := executor.Execute(ctx, command)
-	if err != nil {
-		return nil, fmt.Errorf("running goquery schema %q.%q via poppit: %w", dataset, table, err)
-	}
-	return output, nil
-}
-
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
-}
-
-func parseRows(output []byte) ([]map[string]any, error) {
-	var parsed any
-	if err := json.Unmarshal(output, &parsed); err != nil {
-		return nil, err
-	}
-
-	rows := convertRows(parsed)
-	if len(rows) == 0 {
-		return nil, fmt.Errorf("query output did not contain tabular rows")
-	}
-	return rows, nil
-}
-
-func parseSchema(output []byte) ([]map[string]any, error) {
-	var parsed any
-	if err := json.Unmarshal(output, &parsed); err != nil {
-		return nil, err
-	}
-
-	fields, ok := parsed.([]any)
-	if !ok {
-		return nil, fmt.Errorf("schema output did not contain fields")
-	}
-
-	result := make([]map[string]any, 0, len(fields))
-	for _, field := range fields {
-		record, ok := field.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("schema output contained a non-object field")
-		}
-		name, hasName := record["name"].(string)
-		typ, hasType := record["type"].(string)
-		if !hasName || strings.TrimSpace(name) == "" || !hasType || strings.TrimSpace(typ) == "" {
-			return nil, fmt.Errorf("schema output contained a field without required name/type")
-		}
-		if mode, ok := record["mode"]; ok {
-			if _, modeIsString := mode.(string); !modeIsString {
-				return nil, fmt.Errorf("schema output contained a field with non-string mode")
-			}
-		}
-		if description, ok := record["description"]; ok {
-			if _, descriptionIsString := description.(string); !descriptionIsString {
-				return nil, fmt.Errorf("schema output contained a field with non-string description")
-			}
-		}
-		result = append(result, record)
-	}
-	return result, nil
-}
 
 func buildAllowedSchemaTables(entries []config.AllowedTable) map[string]map[string]struct{} {
 	allowed := make(map[string]map[string]struct{})
@@ -218,56 +62,6 @@ func buildAllowedOrigins(origins []string) map[string]struct{} {
 		allowed[scheme+"://"+strings.ToLower(u.Host)] = struct{}{}
 	}
 	return allowed
-}
-
-func convertRows(parsed any) []map[string]any {
-	switch typed := parsed.(type) {
-	case []any:
-		rows := make([]map[string]any, 0, len(typed))
-		for _, item := range typed {
-			record, ok := item.(map[string]any)
-			if ok {
-				rows = append(rows, record)
-				continue
-			}
-			rows = append(rows, map[string]any{"value": item})
-		}
-		return rows
-	case map[string]any:
-		for _, key := range []string{"rows", "results", "data"} {
-			if nested, ok := typed[key]; ok {
-				if rows := convertRows(nested); len(rows) > 0 {
-					return rows
-				}
-			}
-		}
-	}
-	return nil
-}
-
-func buildTable(rows []map[string]any) ([]string, [][]string) {
-	columnSet := make(map[string]struct{})
-	for _, row := range rows {
-		for col := range row {
-			columnSet[col] = struct{}{}
-		}
-	}
-
-	columns := make([]string, 0, len(columnSet))
-	for col := range columnSet {
-		columns = append(columns, col)
-	}
-	sort.Strings(columns)
-
-	tableRows := make([][]string, 0, len(rows))
-	for _, row := range rows {
-		line := make([]string, 0, len(columns))
-		for _, col := range columns {
-			line = append(line, fmt.Sprintf("%v", row[col]))
-		}
-		tableRows = append(tableRows, line)
-	}
-	return columns, tableRows
 }
 
 type pageData struct {
@@ -326,11 +120,12 @@ func selectSchemaDatasetAndTable(schemaDatasets []string, schemaTablesByDataset 
 }
 
 // NewServer constructs the HTTP server and discovers the available queries.
-func NewServer(cfg *config.Config, executor CommandExecutor) (*http.Server, error) {
+func NewServer(cfg *config.Config, executor queryservice.Executor) (*http.Server, error) {
 	startupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	queries, err := discoverQueries(startupCtx, executor)
+	queryService := queryservice.NewService(executor)
+	queries, err := queryService.DiscoverQueries(startupCtx)
 	if err != nil {
 		return nil, fmt.Errorf("discovering queries: %w", err)
 	}
@@ -388,21 +183,21 @@ func NewServer(cfg *config.Config, executor CommandExecutor) (*http.Server, erro
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
-		output, err := runQuery(ctx, executor, query)
+		output, err := queryService.RunQuery(ctx, query)
 		if err != nil {
 			data.Error = err.Error()
 			_ = tmpl.Execute(w, data)
 			return
 		}
 
-		rows, err := parseRows(output)
+		rows, err := queryservice.ParseRows(output)
 		if err != nil {
 			data.Error = fmt.Sprintf("failed to parse query result: %v", err)
 			_ = tmpl.Execute(w, data)
 			return
 		}
 
-		data.Columns, data.Rows = buildTable(rows)
+		data.Columns, data.Rows = queryservice.BuildTable(rows)
 		_ = tmpl.Execute(w, data)
 	})
 
@@ -430,14 +225,14 @@ func NewServer(cfg *config.Config, executor CommandExecutor) (*http.Server, erro
 		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Poppit.CommandTimeoutSeconds)*time.Second)
 		defer cancel()
 
-		output, err := runSchema(ctx, executor, dataset, table)
+		output, err := queryService.RunSchema(ctx, dataset, table)
 		if err != nil {
 			data.Error = err.Error()
 			_ = tmpl.Execute(w, data)
 			return
 		}
 
-		schemaFields, err := parseSchema(output)
+		schemaFields, err := queryservice.ParseSchema(output)
 		if err != nil {
 			log.Printf("failed to parse schema result for %s.%s: %v", dataset, table, err)
 			data.Error = "failed to parse schema result"
@@ -445,7 +240,7 @@ func NewServer(cfg *config.Config, executor CommandExecutor) (*http.Server, erro
 			return
 		}
 
-		data.Columns, data.Rows = buildTable(schemaFields)
+		data.Columns, data.Rows = queryservice.BuildTable(schemaFields)
 		_ = tmpl.Execute(w, data)
 	})
 
@@ -473,13 +268,13 @@ func NewServer(cfg *config.Config, executor CommandExecutor) (*http.Server, erro
 		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Poppit.CommandTimeoutSeconds)*time.Second)
 		defer cancel()
 
-		output, err := runSchema(ctx, executor, dataset, table)
+		output, err := queryService.RunSchema(ctx, dataset, table)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
 
-		schemaFields, err := parseSchema(output)
+		schemaFields, err := queryservice.ParseSchema(output)
 		if err != nil {
 			log.Printf("failed to parse schema result for %s.%s: %v", dataset, table, err)
 			http.Error(w, "failed to parse schema result", http.StatusBadGateway)

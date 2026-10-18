@@ -2,20 +2,24 @@ package config
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/spf13/viper"
 )
 
+// ServerConfig contains HTTP server settings.
 type ServerConfig struct {
 	Addr string
 }
 
+// RedisConfig contains Redis connection settings.
 type RedisConfig struct {
 	Host     string
 	Port     int
 	Password string
 }
 
+// PoppitConfig contains command execution settings.
 type PoppitConfig struct {
 	Repo                  string
 	Branch                string
@@ -27,11 +31,13 @@ type PoppitConfig struct {
 	CommandTimeoutSeconds int    `mapstructure:"command_timeout_seconds"`
 }
 
+// AllowedTable identifies a dataset/table pair permitted for schema requests.
 type AllowedTable struct {
 	Dataset string `mapstructure:"dataset"`
 	Table   string `mapstructure:"table"`
 }
 
+// SchemaConfig contains schema endpoint allowlists.
 type SchemaConfig struct {
 	AllowedOrigins []string       `mapstructure:"allowed_origins"`
 	AllowedTables  []AllowedTable `mapstructure:"allowed_tables"`
@@ -95,6 +101,7 @@ func Load() (*Config, error) {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("reading config: %w", err)
 		}
+		log.Println("No config file found, using defaults and environment variables")
 	}
 
 	var cfg Config
