@@ -102,8 +102,8 @@ func TestIsTrustedRequestOrigin(t *testing.T) {
 
 func TestServerExecutesOnlyDiscoveredQueries(t *testing.T) {
 	executor := &fakeExecutor{commandOutput: map[string][]byte{
-		"./goquery --json list":          []byte(`["known"]`),
-		"./goquery --json query 'known'": []byte(`{"rows":[{"count":1}]}`),
+		"./goquery --json list --verbose": []byte(`["known"]`),
+		"./goquery --json query 'known'":  []byte(`{"rows":[{"count":1}]}`),
 	}}
 	server, err := NewServer(&config.Config{}, executor)
 	if err != nil {
@@ -124,6 +124,9 @@ func TestServerExecutesOnlyDiscoveredQueries(t *testing.T) {
 	if strings.Contains(queryPageResponse.Body.String(), `action="/schema"`) {
 		t.Fatalf("query page unexpectedly contains the schema form: %q", queryPageResponse.Body.String())
 	}
+	if !strings.Contains(queryPageResponse.Body.String(), `name="query"`) {
+		t.Fatalf("query page is missing the query selector: %q", queryPageResponse.Body.String())
+	}
 
 	invalidRequest := httptest.NewRequest(http.MethodGet, "/queries?query=unknown", nil)
 	invalidResponse := httptest.NewRecorder()
@@ -141,6 +144,37 @@ func TestServerExecutesOnlyDiscoveredQueries(t *testing.T) {
 	}
 }
 
+func TestServerDisplaysAndExecutesQueryParameters(t *testing.T) {
+	expectedCommand := "./goquery --json query 'parameterized' '--count' '3' '--date' '2026-10-19' '--enabled' 'false'"
+	executor := &fakeExecutor{commandOutput: map[string][]byte{
+		"./goquery --json list --verbose": []byte(`[{"name":"plain"},{"name":"parameterized","parameters":[{"name":"date","type":"string"},{"name":"count","type":"number"},{"name":"enabled","type":"boolean"}]}]`),
+		expectedCommand:                   []byte(`{"rows":[{"ok":true}]}`),
+	}}
+	server, err := NewServer(&config.Config{}, executor)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	pageResponse := httptest.NewRecorder()
+	server.Handler.ServeHTTP(pageResponse, httptest.NewRequest(http.MethodGet, "/queries", nil))
+	page := pageResponse.Body.String()
+	for _, expected := range []string{`name="param_date"`, `type="number"`, `Not specified`, `value="false"`, `data-query="parameterized"`} {
+		if !strings.Contains(page, expected) {
+			t.Errorf("query page missing %q: %s", expected, page)
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/queries?query=parameterized&param_date=2026-10-19&param_count=3&param_enabled=false&param_unknown=ignored", nil)
+	response := httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "<td>true</td>") {
+		t.Fatalf("parameterized query response = (%d, %q), want rendered query result", response.Code, response.Body.String())
+	}
+	if executor.lastCommand != expectedCommand {
+		t.Fatalf("last command = %q, want %q", executor.lastCommand, expectedCommand)
+	}
+}
+
 func TestSchemaAPIEnforcesOriginAndTableAllowlist(t *testing.T) {
 	cfg := &config.Config{
 		Poppit: config.PoppitConfig{CommandTimeoutSeconds: 1},
@@ -150,7 +184,7 @@ func TestSchemaAPIEnforcesOriginAndTableAllowlist(t *testing.T) {
 		},
 	}
 	executor := &fakeExecutor{commandOutput: map[string][]byte{
-		"./goquery --json list":                        []byte(`["known"]`),
+		"./goquery --json list --verbose":              []byte(`["known"]`),
 		"./goquery --json schema 'analytics' 'events'": []byte(`[{"name":"id","type":"INTEGER"}]`),
 	}}
 	server, err := NewServer(cfg, executor)

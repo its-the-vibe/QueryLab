@@ -15,7 +15,7 @@ const queriesPageTemplate = `
     main { margin-top: 2rem; }
     form, .results { background: #f7f9fc; border: 1px solid #e1e7ef; border-radius: 8px; margin-top: 1rem; padding: 1.25rem; }
     label { display: block; font-weight: 600; margin-bottom: .5rem; }
-    select, button { font: inherit; padding: .5rem .7rem; }
+    select, input, button { font: inherit; padding: .5rem .7rem; }
     button { background: #155eef; border: 0; border-radius: 4px; color: white; cursor: pointer; margin-left: .5rem; }
     table { border-collapse: collapse; margin-top: 1rem; min-width: 50%; }
     th, td { border: 1px solid #d8dee8; padding: .5rem .7rem; text-align: left; }
@@ -36,9 +36,29 @@ const queriesPageTemplate = `
       <label for="query">Available query</label>
       <select id="query" name="query" required>
         {{range .Queries}}
-          <option value="{{.}}" {{if eq $.SelectedQuery .}}selected{{end}}>{{.}}</option>
+          <option value="{{.Name}}" {{if eq $.SelectedQuery .Name}}selected{{end}}>{{.Name}}</option>
         {{end}}
       </select>
+      {{range .Queries}}
+        {{if .Parameters}}
+          <fieldset class="parameter-group" data-query="{{.Name}}" {{if ne $.SelectedQuery .Name}}hidden disabled{{end}}>
+            <legend>Optional parameters for {{.Name}}</legend>
+            {{range .Parameters}}
+              {{if isBoolean .Type}}
+                <label for="param_{{.Name}}">{{.Name}} ({{.Type}})</label>
+                <select id="param_{{.Name}}" name="param_{{.Name}}">
+                  <option value="" {{if eq (index $.SelectedParameters .Name) ""}}selected{{end}}>Not specified</option>
+                  <option value="true" {{if eq (index $.SelectedParameters .Name) "true"}}selected{{end}}>True</option>
+                  <option value="false" {{if eq (index $.SelectedParameters .Name) "false"}}selected{{end}}>False</option>
+                </select>
+              {{else}}
+                <label for="param_{{.Name}}">{{.Name}} ({{.Type}})</label>
+                <input id="param_{{.Name}}" name="param_{{.Name}}" type="{{inputType .Type}}" value="{{index $.SelectedParameters .Name}}">
+              {{end}}
+            {{end}}
+          </fieldset>
+        {{end}}
+      {{end}}
       <button type="submit">Run query</button>
     </form>
     {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
@@ -56,6 +76,18 @@ const queriesPageTemplate = `
       </section>
     {{end}}
   </main>
+  <script>
+    const querySelect = document.getElementById('query');
+    const parameterGroups = document.querySelectorAll('.parameter-group');
+    function refreshQueryParameters() {
+      for (const group of parameterGroups) {
+        group.hidden = group.dataset.query !== querySelect.value;
+        group.disabled = group.hidden;
+      }
+    }
+    querySelect.addEventListener('change', refreshQueryParameters);
+    refreshQueryParameters();
+  </script>
 </body>
 </html>
 `
