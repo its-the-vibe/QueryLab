@@ -145,7 +145,7 @@ func TestServerExecutesOnlyDiscoveredQueries(t *testing.T) {
 }
 
 func TestServerDisplaysAndExecutesQueryParameters(t *testing.T) {
-	expectedCommand := "./goquery --json query 'parameterized' '--count' '3' '--date' '2026-10-19' '--enabled' 'false'"
+	expectedCommand := "./goquery --json query 'parameterized' -p 'count=3' -p 'date=2026-10-19' -p 'enabled=false'"
 	executor := &fakeExecutor{commandOutput: map[string][]byte{
 		"./goquery --json list --verbose": []byte(`[{"name":"plain"},{"name":"parameterized","parameters":[{"name":"date","type":"string"},{"name":"count","type":"number"},{"name":"enabled","type":"boolean"}]}]`),
 		expectedCommand:                   []byte(`{"rows":[{"ok":true}]}`),

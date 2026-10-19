@@ -68,7 +68,7 @@ func (s *Service) RunQuery(ctx context.Context, name string, parameters map[stri
 		if strings.TrimSpace(parameter) == "" {
 			continue
 		}
-		command += " " + shellQuote("--"+parameter) + " " + shellQuote(parameters[parameter])
+		command += " -p " + shellQuote(parameter+"="+parameters[parameter])
 	}
 	output, err := s.executor.Execute(ctx, command)
 	if err != nil {

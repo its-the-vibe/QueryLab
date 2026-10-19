@@ -94,7 +94,7 @@ func TestRunQueryBuildsQuotedCommand(t *testing.T) {
 func TestRunQueryBuildsSortedParameterFlags(t *testing.T) {
 	t.Parallel()
 
-	expectedCommand := "./goquery --json query 'starling-breakdown' '--date' '2026-10-19' '--limit' '5'"
+	expectedCommand := "./goquery --json query 'starling-breakdown' -p 'date=2026-10-19' -p 'limit=5'"
 	executor := &fakeExecutor{commandOutput: map[string][]byte{expectedCommand: []byte(`[]`)}}
 	parameters := map[string]string{"limit": "5", "date": "2026-10-19"}
 	if _, err := NewService(executor).RunQuery(context.Background(), "starling-breakdown", parameters); err != nil {
