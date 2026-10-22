@@ -65,8 +65,9 @@ func buildAllowedOrigins(origins []string) map[string]struct{} {
 }
 
 type pageData struct {
-	Queries               []string
+	Queries               []queryservice.QueryMetadata
 	SelectedQuery         string
+	SelectedParameters    map[string]string
 	SchemaDatasets        []string
 	SchemaTablesByDataset map[string][]string
 	SchemaTablesJSON      template.JS
@@ -130,11 +131,14 @@ func NewServer(cfg *config.Config, executor queryservice.Executor) (*http.Server
 		return nil, fmt.Errorf("discovering queries: %w", err)
 	}
 
-	queryTmpl := template.Must(template.New("queries").Parse(queriesPageTemplate))
+	queryTmpl := template.Must(template.New("queries").Funcs(template.FuncMap{
+		"inputType": queryParameterInputType,
+		"isBoolean": queryParameterIsBoolean,
+	}).Parse(queriesPageTemplate))
 	schemaTmpl := template.Must(template.New("schema").Parse(schemaPageTemplate))
-	available := make(map[string]struct{}, len(queries))
+	available := make(map[string]queryservice.QueryMetadata, len(queries))
 	for _, query := range queries {
-		available[query] = struct{}{}
+		available[query.Name] = query
 	}
 	allowedSchemaTables := buildAllowedSchemaTables(cfg.Schema.AllowedTables)
 	allowedSchemaOrigins := buildAllowedOrigins(cfg.Schema.AllowedOrigins)
@@ -176,16 +180,25 @@ func NewServer(cfg *config.Config, executor queryservice.Executor) (*http.Server
 		if queryValues, exists := r.URL.Query()["query"]; exists {
 			query := strings.TrimSpace(queryValues[0])
 			data.SelectedQuery = query
-			if _, ok := available[query]; !ok {
+			queryMetadata, ok := available[query]
+			if !ok {
 				data.Error = "invalid query selected"
 				_ = queryTmpl.Execute(w, data)
 				return
 			}
 
+			parameters := make(map[string]string)
+			for _, parameter := range queryMetadata.Parameters {
+				if values, exists := r.URL.Query()["param_"+parameter.Name]; exists && len(values) > 0 && values[0] != "" {
+					parameters[parameter.Name] = values[0]
+				}
+			}
+			data.SelectedParameters = parameters
+
 			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 			defer cancel()
 
-			output, err := queryService.RunQuery(ctx, query)
+			output, err := queryService.RunQuery(ctx, query, parameters)
 			if err != nil {
 				data.Error = err.Error()
 				_ = queryTmpl.Execute(w, data)
@@ -287,6 +300,26 @@ func NewServer(cfg *config.Config, executor queryservice.Executor) (*http.Server
 		Addr:    cfg.Server.Addr,
 		Handler: mux,
 	}, nil
+}
+
+func queryParameterIsBoolean(parameterType string) bool {
+	switch strings.ToLower(strings.TrimSpace(parameterType)) {
+	case "bool", "boolean":
+		return true
+	default:
+		return false
+	}
+}
+
+func queryParameterInputType(parameterType string) string {
+	switch strings.ToLower(strings.TrimSpace(parameterType)) {
+	case "int", "integer", "number", "float", "double", "decimal":
+		return "number"
+	case "date":
+		return "date"
+	default:
+		return "text"
+	}
 }
 
 func isTrustedRequestOrigin(r *http.Request, allowedOrigins map[string]struct{}) bool {

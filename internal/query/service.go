@@ -18,16 +18,31 @@ type Service struct {
 	executor Executor
 }
 
+// QueryMetadata describes a query and the optional parameters it accepts.
+type QueryMetadata struct {
+	Name       string
+	Parameters []QueryParameter
+}
+
+// QueryParameter describes an optional query parameter.
+type QueryParameter struct {
+	Name string
+	Type string
+}
+
 // NewService creates a query service using the provided command executor.
 func NewService(executor Executor) *Service {
 	return &Service{executor: executor}
 }
 
-// DiscoverQueries returns the sorted set of query names available to execute.
-func (s *Service) DiscoverQueries(ctx context.Context) ([]string, error) {
-	output, err := s.executor.Execute(ctx, "./goquery --json list")
+// DiscoverQueries returns the sorted set of available queries and their parameters.
+func (s *Service) DiscoverQueries(ctx context.Context) ([]QueryMetadata, error) {
+	output, err := s.executor.Execute(ctx, "./goquery --json list --verbose")
 	if err != nil {
-		return nil, fmt.Errorf("running goquery list via poppit: %w", err)
+		output, err = s.executor.Execute(ctx, "./goquery --json list")
+		if err != nil {
+			return nil, fmt.Errorf("running goquery list via poppit: %w", err)
+		}
 	}
 
 	queries, err := parseQueryList(output)
@@ -35,13 +50,26 @@ func (s *Service) DiscoverQueries(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("parsing goquery list output: %w", err)
 	}
 
-	sort.Strings(queries)
+	sort.Slice(queries, func(i, j int) bool {
+		return queries[i].Name < queries[j].Name
+	})
 	return queries, nil
 }
 
 // RunQuery executes the named GoQuery query through the configured executor.
-func (s *Service) RunQuery(ctx context.Context, name string) ([]byte, error) {
+func (s *Service) RunQuery(ctx context.Context, name string, parameters map[string]string) ([]byte, error) {
 	command := fmt.Sprintf("./goquery --json query %s", shellQuote(name))
+	parameterNames := make([]string, 0, len(parameters))
+	for parameter := range parameters {
+		parameterNames = append(parameterNames, parameter)
+	}
+	sort.Strings(parameterNames)
+	for _, parameter := range parameterNames {
+		if strings.TrimSpace(parameter) == "" {
+			continue
+		}
+		command += " -p " + shellQuote(parameter+"="+parameters[parameter])
+	}
 	output, err := s.executor.Execute(ctx, command)
 	if err != nil {
 		return nil, fmt.Errorf("running goquery query %q via poppit: %w", name, err)
@@ -59,33 +87,48 @@ func (s *Service) RunSchema(ctx context.Context, dataset, table string) ([]byte,
 	return output, nil
 }
 
-func parseQueryList(output []byte) ([]string, error) {
+func parseQueryList(output []byte) ([]QueryMetadata, error) {
 	var parsed any
 	if err := json.Unmarshal(output, &parsed); err != nil {
 		return nil, err
 	}
 
-	var out []string
-	add := func(value string) {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			out = append(out, value)
+	var out []QueryMetadata
+	add := func(value any) {
+		var query QueryMetadata
+		switch item := value.(type) {
+		case string:
+			query.Name = item
+		case map[string]any:
+			if name, ok := item["name"].(string); ok {
+				query.Name = name
+			} else if name, ok := item["query"].(string); ok {
+				query.Name = name
+			}
+			if parameters, ok := item["parameters"].([]any); ok {
+				for _, parameter := range parameters {
+					record, ok := parameter.(map[string]any)
+					if !ok {
+						continue
+					}
+					name, hasName := record["name"].(string)
+					parameterType, hasType := record["type"].(string)
+					if hasName && strings.TrimSpace(name) != "" && hasType && strings.TrimSpace(parameterType) != "" {
+						query.Parameters = append(query.Parameters, QueryParameter{Name: name, Type: parameterType})
+					}
+				}
+			}
+		}
+		query.Name = strings.TrimSpace(query.Name)
+		if query.Name != "" {
+			out = append(out, query)
 		}
 	}
 
 	switch typed := parsed.(type) {
 	case []any:
 		for _, item := range typed {
-			switch value := item.(type) {
-			case string:
-				add(value)
-			case map[string]any:
-				if name, ok := value["name"].(string); ok {
-					add(name)
-				} else if query, ok := value["query"].(string); ok {
-					add(query)
-				}
-			}
+			add(item)
 		}
 	case map[string]any:
 		for _, key := range []string{"queries", "data", "results"} {
@@ -94,16 +137,7 @@ func parseQueryList(output []byte) ([]string, error) {
 				continue
 			}
 			for _, item := range entries {
-				switch value := item.(type) {
-				case string:
-					add(value)
-				case map[string]any:
-					if name, ok := value["name"].(string); ok {
-						add(name)
-					} else if query, ok := value["query"].(string); ok {
-						add(query)
-					}
-				}
+				add(item)
 			}
 		}
 	}
@@ -113,13 +147,13 @@ func parseQueryList(output []byte) ([]string, error) {
 	}
 
 	unique := make(map[string]struct{}, len(out))
-	result := make([]string, 0, len(out))
-	for _, name := range out {
-		if _, ok := unique[name]; ok {
+	result := make([]QueryMetadata, 0, len(out))
+	for _, query := range out {
+		if _, ok := unique[query.Name]; ok {
 			continue
 		}
-		unique[name] = struct{}{}
-		result = append(result, name)
+		unique[query.Name] = struct{}{}
+		result = append(result, query)
 	}
 	return result, nil
 }

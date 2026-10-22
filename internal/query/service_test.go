@@ -28,11 +28,15 @@ func (f *fakeExecutor) Execute(_ context.Context, command string) ([]byte, error
 func TestParseQueryList(t *testing.T) {
 	t.Parallel()
 
-	queries, err := parseQueryList([]byte(`{"queries":[{"name":"beta"},{"name":"alpha"},"gamma"]}`))
+	queries, err := parseQueryList([]byte(`{"queries":[{"name":"beta","parameters":[{"name":"date","type":"string"}]},{"name":"alpha"},"gamma"]}`))
 	if err != nil {
 		t.Fatalf("parseQueryList() error = %v", err)
 	}
-	expected := []string{"beta", "alpha", "gamma"}
+	expected := []QueryMetadata{
+		{Name: "beta", Parameters: []QueryParameter{{Name: "date", Type: "string"}}},
+		{Name: "alpha"},
+		{Name: "gamma"},
+	}
 	if !reflect.DeepEqual(queries, expected) {
 		t.Fatalf("parseQueryList() = %v, want %v", queries, expected)
 	}
@@ -42,13 +46,31 @@ func TestDiscoverQueriesUsesPoppitCommandAndSorts(t *testing.T) {
 	t.Parallel()
 
 	executor := &fakeExecutor{commandOutput: map[string][]byte{
-		"./goquery --json list": []byte(`["zeta","alpha","zeta"]`),
+		"./goquery --json list --verbose": []byte(`["zeta","alpha","zeta"]`),
 	}}
 	queries, err := NewService(executor).DiscoverQueries(context.Background())
 	if err != nil {
 		t.Fatalf("DiscoverQueries() error = %v", err)
 	}
-	if expected := []string{"alpha", "zeta"}; !reflect.DeepEqual(queries, expected) {
+	if expected := []QueryMetadata{{Name: "alpha"}, {Name: "zeta"}}; !reflect.DeepEqual(queries, expected) {
+		t.Fatalf("DiscoverQueries() = %v, want %v", queries, expected)
+	}
+	if executor.lastCommand != "./goquery --json list --verbose" {
+		t.Fatalf("last command = %q, want %q", executor.lastCommand, "./goquery --json list --verbose")
+	}
+}
+
+func TestDiscoverQueriesFallsBackWithoutVerboseSupport(t *testing.T) {
+	t.Parallel()
+
+	executor := &fakeExecutor{commandOutput: map[string][]byte{
+		"./goquery --json list": []byte(`[{"name":"legacy"}]`),
+	}}
+	queries, err := NewService(executor).DiscoverQueries(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverQueries() error = %v", err)
+	}
+	if expected := []QueryMetadata{{Name: "legacy"}}; !reflect.DeepEqual(queries, expected) {
 		t.Fatalf("DiscoverQueries() = %v, want %v", queries, expected)
 	}
 	if executor.lastCommand != "./goquery --json list" {
@@ -61,7 +83,21 @@ func TestRunQueryBuildsQuotedCommand(t *testing.T) {
 
 	expectedCommand := "./goquery --json query " + shellQuote("team's")
 	executor := &fakeExecutor{commandOutput: map[string][]byte{expectedCommand: []byte(`[]`)}}
-	if _, err := NewService(executor).RunQuery(context.Background(), "team's"); err != nil {
+	if _, err := NewService(executor).RunQuery(context.Background(), "team's", nil); err != nil {
+		t.Fatalf("RunQuery() error = %v", err)
+	}
+	if executor.lastCommand != expectedCommand {
+		t.Fatalf("last command = %q, want %q", executor.lastCommand, expectedCommand)
+	}
+}
+
+func TestRunQueryBuildsSortedParameterFlags(t *testing.T) {
+	t.Parallel()
+
+	expectedCommand := "./goquery --json query 'starling-breakdown' -p 'date=2026-10-19' -p 'limit=5'"
+	executor := &fakeExecutor{commandOutput: map[string][]byte{expectedCommand: []byte(`[]`)}}
+	parameters := map[string]string{"limit": "5", "date": "2026-10-19"}
+	if _, err := NewService(executor).RunQuery(context.Background(), "starling-breakdown", parameters); err != nil {
 		t.Fatalf("RunQuery() error = %v", err)
 	}
 	if executor.lastCommand != expectedCommand {
