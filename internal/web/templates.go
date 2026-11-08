@@ -21,6 +21,7 @@ const queriesPageTemplate = `
     th, td { border: 1px solid #d8dee8; padding: .5rem .7rem; text-align: left; }
     th { background: #f1f4f9; }
     .error { color: #b00020; margin-top: 1rem; }
+    .success { color: #087443; margin-top: 1rem; }
   </style>
 </head>
 <body>
@@ -32,6 +33,8 @@ const queriesPageTemplate = `
   <main>
     <h2>Run a query</h2>
     <p>Choose an available query to view its results. The selection is included in the page URL.</p>
+    <button id="refresh-queries" type="button">Refresh queries</button>
+    <div id="refresh-status" class="success" role="status" aria-live="polite">{{if .Success}}{{.Success}}{{end}}</div>
     <form method="get" action="/queries">
       <label for="query">Available query</label>
       <select id="query" name="query" required>
@@ -87,6 +90,28 @@ const queriesPageTemplate = `
     }
     querySelect.addEventListener('change', refreshQueryParameters);
     refreshQueryParameters();
+    const refreshButton = document.getElementById('refresh-queries');
+    const refreshStatus = document.getElementById('refresh-status');
+    refreshButton.addEventListener('click', async () => {
+      refreshButton.disabled = true;
+      refreshStatus.className = '';
+      refreshStatus.textContent = 'Refreshing queries...';
+      try {
+        const response = await fetch('/api/refresh-queries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.error || 'Failed to refresh queries.');
+        }
+        window.location.assign('/queries?refreshed=1');
+      } catch (error) {
+        refreshStatus.className = 'error';
+        refreshStatus.textContent = 'Failed to refresh queries: ' + error.message;
+        refreshButton.disabled = false;
+      }
+    });
   </script>
 </body>
 </html>
