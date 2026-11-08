@@ -2,14 +2,19 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/its-the-vibe/QueryLab/internal/config"
+	queryservice "github.com/its-the-vibe/QueryLab/internal/query"
 )
 
 type fakeExecutor struct {
@@ -172,6 +177,139 @@ func TestServerDisplaysAndExecutesQueryParameters(t *testing.T) {
 	}
 	if executor.lastCommand != expectedCommand {
 		t.Fatalf("last command = %q, want %q", executor.lastCommand, expectedCommand)
+	}
+}
+
+func TestRefreshQueries(t *testing.T) {
+	executor := &fakeExecutor{commandOutput: map[string][]byte{
+		"./goquery --json list --verbose":           []byte(`["old"]`),
+		"./goquery --json query 'new' -p 'limit=5'": []byte(`[{"ok":true}]`),
+	}}
+	server, err := NewServer(&config.Config{}, executor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(method, contentType string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "/api/refresh-queries", nil)
+		req.Header.Set("Content-Type", contentType)
+		response := httptest.NewRecorder()
+		server.Handler.ServeHTTP(response, req)
+		return response
+	}
+
+	for _, tt := range []struct {
+		method, contentType string
+		status              int
+	}{
+		{http.MethodGet, "application/json", http.StatusMethodNotAllowed},
+		{http.MethodPost, "", http.StatusUnsupportedMediaType},
+		{http.MethodPost, "text/plain", http.StatusUnsupportedMediaType},
+	} {
+		response := request(tt.method, tt.contentType)
+		if response.Code != tt.status || !json.Valid(response.Body.Bytes()) {
+			t.Fatalf("refresh %s %q = (%d, %s)", tt.method, tt.contentType, response.Code, response.Body.String())
+		}
+	}
+
+	executor.commandOutput["./goquery --json list --verbose"] = []byte(`[{"name":"new","parameters":[{"name":"limit","type":"number"}]}]`)
+	response := request(http.MethodPost, "application/json; charset=utf-8")
+	var result struct {
+		Queries []queryservice.QueryMetadata `json:"queries"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil ||
+		!reflect.DeepEqual(result.Queries, []queryservice.QueryMetadata{{Name: "new", Parameters: []queryservice.QueryParameter{{Name: "limit", Type: "number"}}}}) {
+		t.Fatalf("refresh response = (%d, %s)", response.Code, response.Body.String())
+	}
+
+	page := httptest.NewRecorder()
+	server.Handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/queries?refreshed=1", nil))
+	for _, expected := range []string{`Refresh queries`, `Query list refreshed successfully.`, `value="new"`, `name="param_limit"`} {
+		if !strings.Contains(page.Body.String(), expected) {
+			t.Errorf("refreshed page missing %q", expected)
+		}
+	}
+	if strings.Contains(page.Body.String(), `value="old"`) {
+		t.Error("refreshed page still contains removed query")
+	}
+	for _, tt := range []struct{ url, expected string }{
+		{"/queries?query=new&param_limit=5", "<td>true</td>"},
+		{"/queries?query=old", "invalid query selected"},
+	} {
+		page = httptest.NewRecorder()
+		server.Handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, tt.url, nil))
+		if !strings.Contains(page.Body.String(), tt.expected) {
+			t.Errorf("%s: expected %q in %s", tt.url, tt.expected, page.Body.String())
+		}
+	}
+
+	for _, invalid := range []string{`not json`, `[]`} {
+		executor.commandOutput["./goquery --json list --verbose"] = []byte(invalid)
+		response = request(http.MethodPost, "application/json")
+		if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), `"error"`) {
+			t.Fatalf("failed refresh = (%d, %s)", response.Code, response.Body.String())
+		}
+	}
+	executor.err = errors.New("unavailable")
+	response = request(http.MethodPost, "application/json")
+	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), `"error"`) {
+		t.Fatalf("executor failure = (%d, %s)", response.Code, response.Body.String())
+	}
+	page = httptest.NewRecorder()
+	server.Handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/queries", nil))
+	if !strings.Contains(page.Body.String(), `value="new"`) {
+		t.Fatal("failed refresh discarded the previous query list")
+	}
+}
+
+type concurrentRefreshExecutor struct {
+	active  atomic.Int32
+	overlap atomic.Bool
+}
+
+func (e *concurrentRefreshExecutor) Execute(ctx context.Context, command string) ([]byte, error) {
+	if e.active.Add(1) != 1 {
+		e.overlap.Store(true)
+	}
+	defer e.active.Add(-1)
+	select {
+	case <-time.After(time.Millisecond):
+		return []byte(`[{"name":"known","parameters":[{"name":"limit","type":"number"}]}]`), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestConcurrentRefreshQueries(t *testing.T) {
+	executor := &concurrentRefreshExecutor{}
+	server, err := NewServer(&config.Config{}, executor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			request := httptest.NewRequest(http.MethodPost, "/api/refresh-queries", nil)
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			server.Handler.ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Errorf("refresh status = %d", response.Code)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			response := httptest.NewRecorder()
+			server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/queries?query=missing", nil))
+			if !strings.Contains(response.Body.String(), "invalid query selected") {
+				t.Error("query validation failed during refresh")
+			}
+		}()
+	}
+	wg.Wait()
+	if executor.overlap.Load() {
+		t.Error("discovery commands ran concurrently")
 	}
 }
 

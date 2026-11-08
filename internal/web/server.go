@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/its-the-vibe/QueryLab/internal/config"
@@ -76,6 +78,20 @@ type pageData struct {
 	Columns               []string
 	Rows                  [][]string
 	Error                 string
+	Success               string
+}
+
+type querySnapshot struct {
+	queries   []queryservice.QueryMetadata
+	available map[string]queryservice.QueryMetadata
+}
+
+func newQuerySnapshot(queries []queryservice.QueryMetadata) *querySnapshot {
+	available := make(map[string]queryservice.QueryMetadata, len(queries))
+	for _, query := range queries {
+		available[query.Name] = query
+	}
+	return &querySnapshot{queries: queries, available: available}
 }
 
 func buildSchemaSelections(allowedSchemaTables map[string]map[string]struct{}) ([]string, map[string][]string) {
@@ -136,10 +152,9 @@ func NewServer(cfg *config.Config, executor queryservice.Executor) (*http.Server
 		"isBoolean": queryParameterIsBoolean,
 	}).Parse(queriesPageTemplate))
 	schemaTmpl := template.Must(template.New("schema").Parse(schemaPageTemplate))
-	available := make(map[string]queryservice.QueryMetadata, len(queries))
-	for _, query := range queries {
-		available[query.Name] = query
-	}
+	var currentQueries atomic.Pointer[querySnapshot]
+	currentQueries.Store(newQuerySnapshot(queries))
+	refreshSlot := make(chan struct{}, 1)
 	allowedSchemaTables := buildAllowedSchemaTables(cfg.Schema.AllowedTables)
 	allowedSchemaOrigins := buildAllowedOrigins(cfg.Schema.AllowedOrigins)
 	schemaDatasets, schemaTablesByDataset := buildSchemaSelections(allowedSchemaTables)
@@ -149,10 +164,10 @@ func NewServer(cfg *config.Config, executor queryservice.Executor) (*http.Server
 	}
 	schemaTablesJSON := template.JS(string(schemaTablesJSONBytes))
 
-	newPageData := func() pageData {
+	newPageData := func(snapshot *querySnapshot) pageData {
 		selectedDataset, selectedTable := selectSchemaDatasetAndTable(schemaDatasets, schemaTablesByDataset, "", "")
 		return pageData{
-			Queries:               queries,
+			Queries:               snapshot.queries,
 			SchemaDatasets:        schemaDatasets,
 			SchemaTablesByDataset: schemaTablesByDataset,
 			SchemaTablesJSON:      schemaTablesJSON,
@@ -162,6 +177,41 @@ func NewServer(cfg *config.Config, executor queryservice.Executor) (*http.Server
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/refresh-queries", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+			return
+		}
+		contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil || contentType != "application/json" {
+			w.WriteHeader(http.StatusUnsupportedMediaType)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "content type must be application/json"})
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		select {
+		case refreshSlot <- struct{}{}:
+			defer func() { <-refreshSlot }()
+		case <-ctx.Done():
+			w.WriteHeader(http.StatusGatewayTimeout)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "query refresh timed out"})
+			return
+		}
+		updated, err := queryService.DiscoverQueries(ctx)
+		if err != nil {
+			log.Printf("failed to refresh queries: %v", err)
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to refresh queries"})
+			return
+		}
+		currentQueries.Store(newQuerySnapshot(updated))
+		_ = json.NewEncoder(w).Encode(map[string]any{"queries": updated})
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -176,11 +226,15 @@ func NewServer(cfg *config.Config, executor queryservice.Executor) (*http.Server
 			return
 		}
 
-		data := newPageData()
+		snapshot := currentQueries.Load()
+		data := newPageData(snapshot)
+		if r.URL.Query().Get("refreshed") == "1" {
+			data.Success = "Query list refreshed successfully."
+		}
 		if queryValues, exists := r.URL.Query()["query"]; exists {
 			query := strings.TrimSpace(queryValues[0])
 			data.SelectedQuery = query
-			queryMetadata, ok := available[query]
+			queryMetadata, ok := snapshot.available[query]
 			if !ok {
 				data.Error = "invalid query selected"
 				_ = queryTmpl.Execute(w, data)
@@ -220,7 +274,7 @@ func NewServer(cfg *config.Config, executor queryservice.Executor) (*http.Server
 	mux.HandleFunc("/schema", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			data := newPageData()
+			data := newPageData(currentQueries.Load())
 			if datasetValues, datasetSet := r.URL.Query()["dataset"]; datasetSet {
 				table := r.URL.Query().Get("table")
 				dataset := strings.TrimSpace(datasetValues[0])

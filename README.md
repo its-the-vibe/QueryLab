@@ -7,6 +7,7 @@ A web front-end service for discovering and executing GoQuery queries via Poppit
 ## Features
 
 - Discovers executable queries at startup by sending `./goquery --json list` through Poppit
+- Refreshes the available queries at runtime from the queries page or via `POST /api/refresh-queries`
 - Lets users run queries from a web UI by sending `./goquery --json query <query_name>` through Poppit
 - Lets users run GoQuery `schema` from the web UI with selectable dataset/table options
 - Exposes `POST /schema` for allowed dataset/table pairs, running `./goquery --json schema <dataset> <table>` through Poppit
@@ -82,6 +83,10 @@ schema:
 ### Schema API
 
 `POST /schema` accepts `dataset` and `table` form fields and returns the validated GoQuery schema JSON for allowlisted pairs. Requests must include an `Origin` or `Referer` header that matches a host listed in `schema.allowed_origins`.
+
+### Refreshing queries
+
+Use **Refresh queries** on `/queries` to rediscover queries without restarting. Alternatively, send `POST /api/refresh-queries` with `Content-Type: application/json` (no body is required). A successful response contains the updated query metadata in `queries`; failures return a JSON `error` and leave the previous list in place. The JSON content type is required to prevent cross-site form submissions.
 
 ### Schema UI
 
