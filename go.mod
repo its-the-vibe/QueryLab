@@ -3,7 +3,7 @@ module github.com/its-the-vibe/QueryLab
 go 1.27.4
 
 require (
-	github.com/redis/go-redis/v9 v9.24.0
+	github.com/redis/go-redis/v9 v9.24.1
 	github.com/spf13/viper v1.21.0
 )
 
